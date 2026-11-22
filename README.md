@@ -1,17 +1,30 @@
 # Focus Code
 
-在浏览器里查看多个 Git 工作树的变动时间线。每条记录包含变动时间、来源、分支、整体修改原因和逐文件 diff。每个文本 diff 代码段都有自己的说明栏。可以搜索文件或说明、按来源筛选，并编辑整体原因或某个代码段的说明。
+**简体中文** · [English](./README.en.md)
+
+Focus Code 是一个 **coding agent 的代码变动审阅插件**。在浏览器里看 agent 改了哪些文件、每段代码怎么变了，以及它提交的修改原因。
 
 ## 快速开始
 
-环境需要 Node.js 22.13 或更新版本，以及 Git。安装脚本与代理集成面向 macOS 和 Linux。
-
 ```sh
 npm install -g focus-code
-focus-code demo
+focus-code install claude --global
+focus-code show /path/to/repo
 ```
 
-演示包含两个临时 Git 工作树，可用顶部下拉框切换。首次尝试打开 `http://127.0.0.1:4317/`，实际地址以终端输出为准。按 `Ctrl+C` 结束服务。
+把 `claude` 替换为你使用的客户端。支持 `codex`、`pi`、`opencode`、`gemini`、`trae` 和 `trae-cli`。安装后重启客户端。Codex 首次使用时需要在 `/hooks` 审阅并信任 Focus Code。
+
+在 **Claude Code 或 Pi** 里输入 `/focus-code show`，或在 **Codex** 里单独发送 `$focus-code show`，即可打开当前工程的变动记录。先体验界面可以运行 `focus-code demo`。
+
+需要 Node.js 22.13+ 和 Git，支持 macOS 和 Linux。网页地址以终端输出为准。
+
+## 审阅代码变动
+
+- 按时间查看 agent 的文件变动，切换工程、分支和来源，搜索文件路径与说明。
+- 查看实际逐行 diff，打开或收起上下文。
+- 查看 agent 提交的整体原因和逐段说明。没有逐段说明时，网页根据实际增删行生成差异摘要，也可以手动补写。
+
+变动历史保存在本机。
 
 ## 网页与项目配置
 
@@ -120,7 +133,7 @@ Claude Code、Codex、OpenCode、Gemini CLI、Pi、TRAE 桌面端和 TRAE CLI �
 
 | 客户端 | 安装命令 | 启用方式 |
 | --- | --- | --- |
-| Claude Code | `focus-code install claude /path/to/repo` | 重新启动 Claude Code，让它读取目标工程的 `.claude/settings.local.json`。 |
+| Claude Code | `focus-code install claude /path/to/repo` | 重启 Claude Code，加载 `.claude/settings.local.json` 和 `.claude/skills/focus-code/SKILL.md`。 |
 | Codex | `focus-code install codex /path/to/repo` | 在受信任的工程里启动 Codex CLI，运行 `/hooks`，审阅并启用 `.codex/hooks.json` 中的 Focus Code hooks。 |
 | Pi | `focus-code install pi /path/to/repo` | 重新启动 Pi，使用项目扩展信任提示加载 `.pi/extensions/focus-code.ts`。 |
 | OpenCode | `focus-code install opencode /path/to/repo` | 重新启动 OpenCode，加载 `.opencode/plugins/focus-code.js`。 |

@@ -2,7 +2,11 @@
   "name": "focus-code",
   "version": "0.2.0",
   "type": "module",
-  "description": "Local review timeline for coding agent changes",
+  "description": "A local code change review plugin for coding agents",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ihuzhou/focus-code.git"
+  },
   "keywords": [
     "git",
     "diff",
@@ -10,6 +14,7 @@
     "code-review"
   ],
   "files": [
+    "README.en.md",
     "src/",
     "integrations/",
     "web/"
