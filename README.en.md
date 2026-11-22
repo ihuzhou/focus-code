@@ -35,7 +35,15 @@ Your change history is stored locally.
 
 ## Browser and project settings
 
-You can also open the viewer from a regular terminal. Run `focus-code show` from a Git project or pass a Git worktree path to open it directly. To add a project from the browser, run `focus-code watch`, select **添加工程** (Add project), and enter the absolute path to a Git worktree. Each worktree has its own history.
+Open the viewer directly from a regular terminal.
+
+```sh
+focus-code show
+```
+
+Run it in a Git project to select its worktree automatically. Run it from any other directory to open the viewer and choose a registered project from the dropdown. To open a particular project directly, you can optionally pass its path with `focus-code show /path/to/repo`.
+
+To register a project in the browser, select **添加工程** (Add project) and enter the absolute path to its Git worktree. Each worktree has its own history.
 
 | Control | Options | Default and behavior |
 | --- | --- | --- |
@@ -56,7 +64,7 @@ Pausing tracking also pauses workspace scanning and agent prompts for explanatio
 | --- | --- | --- |
 | `focus-code watch [repository]` | `--port <port>`, `--no-open` | Starts the tracking service and browser view. Without a path, it opens the current Git worktree when available. |
 | `focus-code demo` | `--port <port>`, `--no-open` | Starts a viewer with sample changes. |
-| `focus-code show [repository]` | `--no-open` | Opens the current or specified project's history. Reuses a running viewer for the same data directory or starts one on demand. |
+| `focus-code show [repository]` | `--no-open` | Opens the viewer. The path is optional. From a Git worktree, the command selects that project automatically. Reuses a running viewer for the same data directory or starts one on demand. |
 | `focus-code install <client> --global` | `--global` | Installs the integration for the current user. Restart the client afterward. |
 | `focus-code install <client> <repository>` | Git worktree path | Installs only for that project. Use `all` to install every supported project-level integration. |
 
@@ -65,7 +73,7 @@ Pausing tracking also pauses workspace scanning and agent prompts for explanatio
 ```sh
 focus-code watch /path/to/repo --port 4500
 focus-code watch --port 0 --no-open
-focus-code show /path/to/repo --no-open
+focus-code show --no-open
 ```
 
 With neither `--global` nor a repository path, Claude Code, OpenCode, Gemini CLI, and TRAE Desktop install for the current user. Codex, Pi, and `all` use the current Git worktree. TRAE CLI uses a user-level plugin installation.

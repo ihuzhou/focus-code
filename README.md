@@ -35,7 +35,15 @@ focus-code install claude --global
 
 ## 网页与项目配置
 
-也可以从普通终端打开网页。在 Git 工程里运行 `focus-code show`，或用 `focus-code show /path/to/repo` 打开指定工程。还可以运行 `focus-code watch`，再在网页点「添加工程」并输入 Git 工作树的绝对路径。网页的下拉框按 Git 工作树切换工程，每个工作树独立保存历史。
+从普通终端也可以直接运行这条命令。
+
+```sh
+focus-code show
+```
+
+在 Git 工程中运行时，会自动选中当前工作树。在其他目录运行时，会打开同一个网页，可以用顶部下拉框选择已登记的工程。想直接打开指定工程时，可以加上可选路径 `focus-code show /path/to/repo`。
+
+要登记新工程，可以在网页点「添加工程」并输入 Git 工作树的绝对路径。每个工作树独立保存历史。
 
 | 位置 | 可配置项 | 默认值与作用 |
 | --- | --- | --- |
@@ -56,7 +64,7 @@ focus-code install claude --global
 | --- | --- | --- |
 | `focus-code watch [仓库路径]` | `--port <端口>`、`--no-open` | 持续监测并启动网页。路径省略时优先打开当前 Git 工作树，也可在网页选择已登记工程。 |
 | `focus-code demo` | `--port <端口>`、`--no-open` | 打开示例记录。 |
-| `focus-code show [仓库路径]` | `--no-open` | 打开当前或指定工程的时间线，复用同一数据目录的实际记录服务。服务尚未启动时会按需启动。 |
+| `focus-code show [仓库路径]` | `--no-open` | 打开网页。路径可以省略，此时在 Git 工程中运行会自动选中当前工作树。服务尚未启动时会按需启动。 |
 | `focus-code install <客户端> --global` | `--global` | 为当前系统用户安装客户端集成。安装后重启客户端。 |
 | `focus-code install <客户端> <仓库路径>` | Git 工作树路径 | 只为指定 Git 工程安装集成。`all` 可一次安装所有支持按工程配置的客户端。 |
 
@@ -65,7 +73,7 @@ focus-code install claude --global
 ```sh
 focus-code watch /path/to/repo --port 4500
 focus-code watch --port 0 --no-open
-focus-code show /path/to/repo --no-open
+focus-code show --no-open
 ```
 
 不传 `--global` 和仓库路径时，Claude Code、OpenCode、Gemini CLI 和 TRAE 桌面端使用用户级安装。Codex、Pi 和 `all` 使用当前 Git 工作树。TRAE CLI 使用用户级插件安装。
@@ -127,7 +135,7 @@ Claude Code、Codex、OpenCode、Gemini CLI、Pi、TRAE 桌面端和 TRAE CLI �
 | Pi | `/focus-code show` |
 | Codex | `$focus-code show`，作为单独一条消息发送 |
 
-命令由本地扩展或 hook 执行。已有本机记录服务时会复用它，服务未运行时会启动一个。终端也可以用 `focus-code show /path/to/repo` 打开指定工程。
+命令由本地扩展或 hook 执行。已有本机记录服务时会复用它，服务未运行时会启动一个。从普通终端也可以直接运行 `focus-code show`。
 
 #### TRAE 启用步骤
 
