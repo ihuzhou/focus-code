@@ -4,17 +4,24 @@
 
 Focus Code 是一个 **coding agent 的代码变动审阅插件**。在浏览器里看 agent 改了哪些文件、每段代码怎么变了，以及它提交的修改原因。
 
-## 快速开始
+## 用 Claude Code 快速开始
+
+在终端安装 Focus Code 和 Claude Code 插件。
 
 ```sh
 npm install -g focus-code
 focus-code install claude --global
-focus-code show /path/to/repo
 ```
 
-把 `claude` 替换为你使用的客户端。支持 `codex`、`pi`、`opencode`、`gemini`、`trae` 和 `trae-cli`。安装后重启客户端。Codex 首次使用时需要在 `/hooks` 审阅并信任 Focus Code。
+在要审阅的 Git 工程中启动新的 Claude Code 会话。让 Claude 完成一次代码修改，然后在 **Claude Code 的输入框**里运行这条命令。
 
-在 **Claude Code 或 Pi** 里输入 `/focus-code show`，或在 **Codex** 里单独发送 `$focus-code show`，即可打开当前工程的变动记录。先体验界面可以运行 `focus-code demo`。
+```text
+/focus-code show
+```
+
+浏览器会打开当前工程的变动时间线，你可以点开记录查看逐行 diff 和 Claude 提交的修改原因。
+
+[其他客户端的安装方式](#客户端集成)也在下方。Pi 同样使用 `/focus-code show`，Codex 使用 `$focus-code show`。想先试用界面，可以在终端运行 `focus-code demo`。
 
 需要 Node.js 22.13+ 和 Git，支持 macOS 和 Linux。网页地址以终端输出为准。
 
@@ -28,7 +35,7 @@ focus-code show /path/to/repo
 
 ## 网页与项目配置
 
-在 Git 工程里运行 `focus-code show`，或用 `focus-code show /path/to/repo` 打开指定工程。也可以运行 `focus-code watch`，再在网页点「添加工程」并输入 Git 工作树的绝对路径。网页的下拉框按 Git 工作树切换工程，每个工作树独立保存历史。
+也可以从普通终端打开网页。在 Git 工程里运行 `focus-code show`，或用 `focus-code show /path/to/repo` 打开指定工程。还可以运行 `focus-code watch`，再在网页点「添加工程」并输入 Git 工作树的绝对路径。网页的下拉框按 Git 工作树切换工程，每个工作树独立保存历史。
 
 | 位置 | 可配置项 | 默认值与作用 |
 | --- | --- | --- |

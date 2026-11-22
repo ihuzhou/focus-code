@@ -4,17 +4,24 @@
 
 Focus Code is a **code change review plugin for coding agents**. See which files your agent touched, exactly how each section changed, and the reasons it recorded, all in a local browser view.
 
-## Quick start
+## Quick start with Claude Code
+
+Install Focus Code and its Claude Code integration in your terminal.
 
 ```sh
 npm install -g focus-code
 focus-code install claude --global
-focus-code show /path/to/repo
 ```
 
-Replace `claude` with the client you use. Supported client names include `codex`, `pi`, `opencode`, `gemini`, `trae`, and `trae-cli`. Restart your client after installation. In Codex, use `/hooks` to review and trust the Focus Code hooks before using the integration.
+Start a new Claude Code session in the Git project you want to review. After Claude makes an edit, enter this command **in Claude Code**.
 
-To open the current project's history from **Claude Code or Pi**, enter `/focus-code show`. In **Codex**, send `$focus-code show` as its own message. Run `focus-code demo` to try the interface with sample changes.
+```text
+/focus-code show
+```
+
+Your browser opens the current project's timeline. Select an entry to review its line-by-line diff and the reason Claude recorded.
+
+See [client integrations](#client-integrations) for other clients. Pi also uses `/focus-code show`, and Codex uses `$focus-code show`. To try the viewer with sample changes, run `focus-code demo` in your terminal.
 
 Requires Node.js 22.13+ and Git on macOS or Linux. The terminal prints the browser address.
 
@@ -28,7 +35,7 @@ Your change history is stored locally.
 
 ## Browser and project settings
 
-Run `focus-code show` from a Git project or pass a Git worktree path to open it directly. You can also run `focus-code watch` and use **添加工程** (Add project) in the browser to enter the absolute path to a Git worktree. Each worktree has its own history.
+You can also open the viewer from a regular terminal. Run `focus-code show` from a Git project or pass a Git worktree path to open it directly. To add a project from the browser, run `focus-code watch`, select **添加工程** (Add project), and enter the absolute path to a Git worktree. Each worktree has its own history.
 
 | Control | Options | Default and behavior |
 | --- | --- | --- |
