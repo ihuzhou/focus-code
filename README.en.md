@@ -29,7 +29,7 @@ Requires Node.js 22.13+ and Git on macOS or Linux.
 
 In this example, Codex makes concurrent token refresh calls share one request. Open its timeline entry to see the exact changes in `session.ts` and the reason for sharing the request.
 
-- **Find the edit.** Narrow down the timeline by project, branch, or source, or search by path and explanation.
+- **Find the edit.** Current changes opens by default and shows uncommitted diffs against Git HEAD. Use History to find edits that were committed, deleted, or reverted. Both views support branch and source filters.
 - **Inspect the implementation.** Review added and removed lines file by file and reveal surrounding context when needed.
 - **Understand the reason.** Read the overall reason and section notes beside the diff, or add your own notes.
 
@@ -47,13 +47,16 @@ Run it in a Git project to select its worktree automatically. Run it from any ot
 
 To register a project in the browser, select **添加工程** (Add project) and enter the absolute path to its Git worktree. Each worktree has its own history.
 
-Tracking is on by default. In **监测设置** (Tracking settings), you can change the global default or override it for the current project.
+Open **界面设置** (Appearance) to choose Simplified Chinese or English and a light, dark, or automatic theme. Auto follows the system theme. The browser remembers your choices.
+
+Tracking is on by default. In **监测设置** (Tracking settings), you can change the global default or override it for the current project. With a demo project selected, these controls apply to the demo data.
 
 <details>
 <summary>Tracking settings, project selection, and filters</summary>
 
 | Control | Options | Default and behavior |
 | --- | --- | --- |
+| **界面设置** (Appearance) | Interface language and theme | Simplified Chinese and Auto by default. The language setting applies to interface text and generated summaries. Saved reasons and explanations retain their original wording. |
 | **监测设置** (Tracking settings) → **全局默认** (Global default) | On or off | On. Applies to every project that inherits the global default, including newly discovered projects. |
 | **监测设置** → Current project | Inherit the global default, always on, or always off | Inherit. A project override takes precedence over the global default and is stored by Git worktree root. |
 | Project and branch selectors | Choose a project and all branches or a single branch | All branches. Records are filtered by the branch at capture time. The list includes local branches and branches with saved history. |
@@ -63,7 +66,7 @@ Tracking is on by default. In **监测设置** (Tracking settings), you can chan
 - To exclude one project, keep tracking on globally and set that project to always off.
 - To track only selected projects, turn tracking off globally and set each chosen project to always on.
 
-Pausing tracking also pauses workspace scanning and agent prompts for explanations. Existing history remains available for browsing, searching, and manual edits. Resuming uses the current files as a new baseline and records subsequent edits. Settings apply to the viewer and agents using the same data directory. Use the live viewer to change them.
+Pausing tracking also pauses workspace scanning, the current diff view, and agent prompts for explanations. Existing history remains available for browsing, searching, and manual edits. Resuming uses the current files as a new history baseline and records subsequent edits. Settings apply to the viewer and agents using the same data directory.
 
 </details>
 
@@ -175,9 +178,10 @@ To remove an integration, remove the Focus Code hook entries that invoke `src/cl
 <details>
 <summary>Snapshots, explanations, and tracking coverage</summary>
 
-- The first scan captures a worktree baseline. Later scans record changes to Git-tracked and non-ignored files, including executable-bit changes. The viewer polls open worktrees about every 1.5 seconds, so it can record manual saves as well as agent edits.
-- The agent can submit a reason with `: # focus-reason: explain the goal of this edit`. After a captured edit, the hook gives the agent the changed section IDs. An agent can explain sections with `: # focus-explain: {"change":42,"notes":[[0,0,"Validate the input before it reaches the cache"]]}`. Each note contains the zero-based file index, zero-based section index, and explanation.
-- Each diff section shows an agent explanation, a manual entry, or a summary generated from its added and removed lines. A manual entry takes precedence over later agent submissions.
+- Current changes compares the worktree against Git HEAD and updates about every 0.8 seconds while the page is visible. It can show edits while an agent tool is still running. Reverting content or deleting a newly added file removes its current diff. History tracks Git-tracked and non-ignored files about every 1.5 seconds after its initial baseline.
+- Pi's global or project extension records its tool activity. Start a new Pi session after installation or an update, or use `/reload` in an open session. Attribution to Pi requires a captured tool event.
+- The agent can submit an overall reason before editing with `: # focus-reason: explain the goal of this edit`. After the edit, the hook gives the agent the changed section IDs and lets it fill in a missing overall reason alongside section explanations with `: # focus-explain: {"change":42,"reason":"Prevent null values from reaching the cache","notes":[[0,0,"Validate the input before it reaches the cache"]]}`. Each note contains the zero-based file index, zero-based section index, and explanation.
+- Records with no overall reason show excerpts from saved section notes or an overview generated from the actual diff, with the source labeled in the viewer. Each diff section shows an agent explanation, a manual entry, or a summary. Summaries use nearby code and calls in the same file to explain effects the code supports, such as reusing an extracted helper or avoiding an error when a value is missing. With limited context, the summary describes the concrete edit. A manual entry takes precedence over later agent submissions.
 - Overlapping tools in one session are grouped. Edits made by overlapping sessions are shown with an unknown source. Multiple changes inside a sampling interval can be grouped, and transient changes can be missed between samples.
 - Built-in file edits in Claude Code, OpenCode, Gemini CLI, and TRAE are recorded in the worktree containing the edited file. Shell commands are tracked from the hook's working directory or the tool's explicit working directory. A shell command writing to another worktree requires that worktree to be monitored separately to capture the edit.
 - Binary files and files larger than 256 KiB are recorded as metadata. Local SQLite databases hold the tracking state and history.

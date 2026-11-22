@@ -4,6 +4,12 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Journal } from './journal.js';
 
+function seedWorktree(root) {
+  execFileSync('git', ['-C', root, 'add', '--all'], { stdio: 'ignore' });
+  execFileSync('git', ['-C', root, '-c', 'user.name=Focus Code Demo', '-c', 'user.email=focus-code@example.invalid',
+    '-c', 'core.hooksPath=/dev/null', 'commit', '--no-gpg-sign', '-qm', 'Demo baseline'], { stdio: 'ignore' });
+}
+
 export function makeDemo() {
   const scratch = mkdtempSync(join(tmpdir(), 'focus-code-'));
   const root = join(realpathSync(scratch), 'atlas-web');
@@ -26,6 +32,7 @@ export async function refreshSession() {
 }
 `);
   write('README.md', '# Atlas Web\n\nA workspace for the Atlas team.\n');
+  seedWorktree(root);
   const journal = new Journal(root, join(scratch, 'data'));
   const now = Date.now();
   const previousDay = new Date(now);
@@ -129,6 +136,7 @@ describe('refreshSession', () => {
   const docsTime = now - 45 * 60000;
   const overview = join(docs, 'README.md');
   writeFileSync(overview, '# Atlas Docs\n\nDevelopment guides and API references.\n');
+  seedWorktree(docs);
   docsJournal.poll(docsTime);
   docsJournal.setReason('opencode', 'docs-demo', '补上本地预览命令，贡献者可以在提交前检查页面。', docsTime + 3000);
   docsJournal.startTool('opencode', 'docs-demo', 'preview', 'edit', docsTime + 4000);
@@ -145,7 +153,7 @@ describe('refreshSession', () => {
   writeFileSync(overview, '# Atlas Docs\n\nDevelopment guides and API references.\n\nRun `npm run docs` and open `http://localhost:4321` to preview the site locally.\n');
   docsJournal.endTool('trae', 'desktop-demo', 'preview-url', now - 40000);
   docsJournal.saveHunkNotes(3, [[0, 0, '把默认预览地址紧跟在启动命令后，贡献者可以直接打开。']], { source: 'trae', session: 'desktop-demo' });
-  execFileSync('git', ['-C', docs, 'symbolic-ref', 'HEAD', 'refs/heads/review/docs']);
+  execFileSync('git', ['-C', docs, 'switch', '-q', '-c', 'review/docs']);
   docsJournal.setReason('trae-cli', 'terminal-demo', '补充文档提交前的检查步骤，帮助贡献者发现失效链接。', now - 30000);
   docsJournal.startTool('trae-cli', 'terminal-demo', 'link-check', 'apply_patch', now - 28000);
   writeFileSync(join(docs, 'CONTRIBUTING.md'), '# Contributing\n\nUse Node.js 22 or newer.\nRun `npm ci` before starting the docs server.\nRun `npm run docs:check` to validate links before submitting.\n');

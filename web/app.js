@@ -1,11 +1,14 @@
+import { describeHunk } from './diff-summary.js';
+import { translate } from './i18n.js';
+
 const $ = id => document.getElementById(id);
-const labels = { codex: 'Codex', claude: 'Claude Code', pi: 'Pi', opencode: 'OpenCode', gemini: 'Gemini CLI', trae: 'TRAE', 'trae-cli': 'TRAE CLI', workspace: '工作区', mixed: '来源不明' };
+const labels = { codex: 'Codex', claude: 'Claude Code', pi: 'Pi', opencode: 'OpenCode', gemini: 'Gemini CLI', trae: 'TRAE', 'trae-cli': 'TRAE CLI' };
 const codes = { added: 'A', modified: 'M', deleted: 'D' };
-const statuses = { added: '新增', modified: '修改', deleted: '删除' };
-const limitations = { binary: '二进制文件，已记录变动。', large: '文件超过 256 KiB，已记录变动。', complex: '差异计算超时，已记录文件变动。' };
-const fullTime = new Intl.DateTimeFormat('zh-CN', { dateStyle: 'medium', timeStyle: 'medium' });
-const shortTime = new Intl.DateTimeFormat('zh-CN', { hour: '2-digit', minute: '2-digit', hourCycle: 'h23' });
-const dayFormat = new Intl.DateTimeFormat('zh-CN', { month: 'long', day: 'numeric', weekday: 'short' });
+let language = readPreference('focus-code-language') === 'en' ? 'en' : 'zh-CN';
+let dates = dateFormatters();
+const t = (key, ...values) => translate(language, key, ...values);
+const sourceName = source => labels[source] ?? t(source);
+const fileLimitation = value => value ? t(value) : '';
 let changes = [];
 let selected = 0;
 let following = true;
@@ -13,6 +16,8 @@ let detail;
 let file;
 let hunks;
 let patchMessage;
+let changeView = new URLSearchParams(location.search).get('view') === 'history' ? 'history' : 'current';
+const changesApi = () => changeView === 'current' ? '/api/current' : '/api/changes';
 let view = 0;
 let listRequest = 0;
 let detailRequest = 0;
@@ -33,6 +38,35 @@ let trackingTarget;
 let trackingInitial;
 let trackingRequest = 0;
 
+function readPreference(key) {
+  try { return localStorage.getItem(key); }
+  catch { return null; }
+}
+
+function savePreference(key, value) {
+  try { localStorage.setItem(key, value); }
+  catch { /* Preferences still apply for the current page. */ }
+}
+
+function dateFormatters() {
+  return {
+    full: new Intl.DateTimeFormat(language, { dateStyle: 'medium', timeStyle: 'medium' }),
+    short: new Intl.DateTimeFormat(language, { hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }),
+    day: new Intl.DateTimeFormat(language, { month: 'long', day: 'numeric', weekday: 'short' }),
+  };
+}
+
+function translateInterface() {
+  document.documentElement.lang = language;
+  for (const node of document.querySelectorAll('[data-i18n]')) node.textContent = t(node.dataset.i18n);
+  for (const [attribute, key] of [['aria-label', 'aria'], ['placeholder', 'placeholder'], ['title', 'title']]) {
+    for (const node of document.querySelectorAll(`[data-i18n-${key}]`)) {
+      node.setAttribute(attribute, t(node.getAttribute(`data-i18n-${key}`)));
+    }
+  }
+  document.title = `Focus Code · ${t('timeline')}`;
+}
+
 function projectRoute(path, id = project) {
   const url = new URL(path, location.origin);
   url.searchParams.set('project', id);
@@ -41,21 +75,21 @@ function projectRoute(path, id = project) {
 
 function updateProjectOptions(projects, preferred) {
   const picker = $('project');
-  const key = JSON.stringify(projects);
+  const key = JSON.stringify([language, projects]);
   if (key === projectListKey && picker.value === preferred) return;
   if (key !== projectListKey) {
     projectListKey = key;
     const counts = new Map();
     for (const item of projects) counts.set(item.name, (counts.get(item.name) ?? 0) + 1);
     picker.replaceChildren(...projects.map(item => {
-      const label = item.demo ? `${item.name}（演示）` : counts.get(item.name) > 1 ? item.root : item.name;
+      const label = item.demo ? t('demoProject', item.name) : counts.get(item.name) > 1 ? item.root : item.name;
       const option = element('option', '', label);
       option.value = item.id;
       option.title = item.root ?? '';
       return option;
     }));
     picker.disabled = !projects.length;
-    if (picker.disabled) picker.append(element('option', '', '选择工程'));
+    if (picker.disabled) picker.append(element('option', '', t('chooseProject')));
   }
   picker.value = preferred;
   picker.title = picker.selectedOptions[0]?.title ?? '';
@@ -70,24 +104,24 @@ function renderProjects(data, preferred = data.selected) {
 }
 
 function renderEmptyProjects() {
-  $('connection').textContent = '未选择工程';
+  $('connection').textContent = t('unselected');
   $('signal').classList.remove('live', 'paused');
   $('alert').hidden = true;
-  placeholder('还没有工程', '已接入的代理记录到修改后，工程会自动出现在列表，也可以手动添加。');
+  placeholder(t('noProjects'), t('discoverProjects'));
 }
 
 function branchName(value) {
-  return value === 'HEAD' ? '分离 HEAD' : value;
+  return value === 'HEAD' ? t('detachedHead') : value;
 }
 
 function updateBranchOptions(current, branches) {
   const picker = $('branch');
-  const key = JSON.stringify([current, branches]);
+  const key = JSON.stringify([language, current, branches]);
   if (key !== branchListKey) {
     branchListKey = key;
-    picker.replaceChildren(element('option', '', '所有分支'), ...branches.map(value => {
+    picker.replaceChildren(element('option', '', t('allBranches')), ...branches.map(value => {
       const label = branchName(value);
-      const option = element('option', '', value === current ? `${label}（当前）` : label);
+      const option = element('option', '', value === current ? t('currentBranch', label) : label);
       option.value = value;
       return option;
     }));
@@ -96,7 +130,7 @@ function updateBranchOptions(current, branches) {
   }
   const selectedBranch = branches.includes(branch) ? branch : '';
   if (picker.value !== selectedBranch) picker.value = selectedBranch;
-  picker.title = selectedBranch ? branchName(selectedBranch) : current ? `当前工作树分支 ${branchName(current)}` : '';
+  picker.title = selectedBranch ? branchName(selectedBranch) : current ? t('branchTitle', branchName(current)) : '';
 }
 
 function resetTimeline() {
@@ -122,6 +156,8 @@ function updateAddress() {
   else url.searchParams.delete('project');
   if (branch) url.searchParams.set('branch', branch);
   else url.searchParams.delete('branch');
+  if (changeView === 'history') url.searchParams.set('view', changeView);
+  else url.searchParams.delete('view');
   history.replaceState(null, '', url);
 }
 
@@ -138,18 +174,32 @@ function switchProject(id) {
   $('search').disabled = $('source').disabled = !id;
   updateAddress();
   if (id) {
-    placeholder('正在读取变动', '');
+    placeholder(t('loadingChanges'), '');
     void refresh();
   } else {
     renderEmptyProjects();
   }
 }
 
+function updateViewButtons() {
+  for (const mode of ['current', 'history']) $(`view-${mode}`).setAttribute('aria-pressed', String(mode === changeView));
+}
+
+function switchChangeView(mode) {
+  if (mode === changeView) return;
+  changeView = mode;
+  updateViewButtons();
+  resetTimeline();
+  updateAddress();
+  placeholder(t('loadingChanges'), '');
+  void refresh();
+}
+
 function switchBranch(value) {
   branch = value;
   resetTimeline();
   updateAddress();
-  placeholder('正在读取变动', '');
+  placeholder(t('loadingChanges'), '');
   void refresh();
 }
 
@@ -162,7 +212,7 @@ async function loadProjects() {
   } catch (error) {
     if (request !== projectsRequest || project) return;
     renderConnection(null, error);
-    placeholder('无法读取工程列表', '检查本地服务是否仍在运行，然后重试。');
+    placeholder(t('projectListError'), t('serverHint'));
   }
 }
 
@@ -174,7 +224,9 @@ function element(tag, className, text) {
 }
 
 async function api(path, options) {
-  const response = await fetch(path, options);
+  const headers = new Headers(options?.headers);
+  headers.set('Accept-Language', language);
+  const response = await fetch(path, { ...options, headers });
   const data = await response.json();
   if (!response.ok) throw new Error(data.error);
   return data;
@@ -187,7 +239,7 @@ function stats(change) {
 }
 
 function fileSummary(path, count) {
-  return count === 1 ? path : `${path} 等 ${count} 个文件`;
+  return count === 1 ? path : t('fileSummary', path, count);
 }
 
 function title(change) {
@@ -197,14 +249,14 @@ function title(change) {
 function dayLabel(time) {
   const date = new Date(time);
   const today = new Date();
-  if (date.toDateString() === today.toDateString()) return '今天';
+  if (date.toDateString() === today.toDateString()) return t('today');
   today.setDate(today.getDate() - 1);
-  if (date.toDateString() === today.toDateString()) return '昨天';
-  return date.getFullYear() === today.getFullYear() ? dayFormat.format(date) : date.toLocaleDateString('zh-CN');
+  if (date.toDateString() === today.toDateString()) return t('yesterday');
+  return date.getFullYear() === today.getFullYear() ? dates.day.format(date) : date.toLocaleDateString(language);
 }
 
 function renderList() {
-  const key = JSON.stringify([selected, changes]);
+  const key = JSON.stringify([language, selected, changes]);
   if (key === listKey) return;
   listKey = key;
   const list = $('timeline-list');
@@ -223,15 +275,15 @@ function renderList() {
     button.type = 'button';
     button.dataset.id = change.id;
     button.setAttribute('aria-current', String(change.id === selected));
-    const time = element('time', '', shortTime.format(change.time));
+    const time = element('time', '', dates.short.format(change.time));
     time.dateTime = new Date(change.time).toISOString();
-    time.title = fullTime.format(change.time);
+    time.title = dates.full.format(change.time);
     const line = element('span', 'event-line');
-    line.append(element('span', `source ${change.source}`, labels[change.source]), time);
+    line.append(element('span', `source ${change.source}`, sourceName(change.source)), time);
     const name = element('span', 'event-title', title(change));
     name.title = title(change);
     const foot = element('span', 'event-foot');
-    foot.append(`${change.file_count} 个文件`, stats(change));
+    foot.append(t('filesCount', change.file_count), stats(change));
     button.append(line, name, foot);
     button.addEventListener('click', () => {
       following = false;
@@ -240,16 +292,16 @@ function renderList() {
     if (button.dataset.id === focused) restoreFocus = button;
     content.append(button);
   }
-  if (!changes.length) content.append(element('p', 'no-results', '没有匹配的变动。'));
+  if (!changes.length) content.append(element('p', 'no-results', t('noResults')));
   list.replaceChildren(content);
   if (restoreFocus) restoreFocus.focus({ preventScroll: true });
   list.scrollTop = oldTop;
 }
 
 function renderConnection(data, error) {
-  const message = error ? '连接中断，正在重试。' : data.scanError ? '仓库扫描暂时失败，请检查运行 Focus Code 的终端。' : '';
+  const message = error ? t('reconnecting') : data.scanError ? t('scanError') : '';
   const paused = !error && data.tracking?.enabled === false;
-  $('connection').textContent = error ? '连接中断' : data.scanError ? '扫描异常' : paused ? '记录已暂停' : '本地监测';
+  $('connection').textContent = t(error ? 'disconnected' : data.scanError ? 'scanFailed' : paused ? 'paused' : 'localTracking');
   $('signal').classList.toggle('live', !message && !paused);
   $('signal').classList.toggle('paused', paused);
   $('alert').textContent = message;
@@ -271,7 +323,7 @@ async function refresh({ more = false } = {}) {
   if (more && changes.length) parameters.set('before', changes.at(-1).id);
   if (more) $('more').disabled = true;
   try {
-    const data = await api(projectRoute(`/api/changes?${parameters}`));
+    const data = await api(projectRoute(`${changesApi()}?${parameters}`));
     if (currentView !== view || (!more && request !== listRequest)) return;
     updateProjectOptions(data.projects, project);
     const { branch: current, branches } = data.repository;
@@ -296,14 +348,16 @@ async function refresh({ more = false } = {}) {
     const editing = !$('reason-form').hidden || $('hunk-dialog').open;
     if (!choice || (!more && following && !editing && selected !== changes[0]?.id)) {
       selectChange(changes[0]?.id, { emptyRepo: data.stats.changes === 0, paused: data.tracking?.enabled === false });
-    } else if (!editing && (!detail || detail.reason !== choice.reason || detail.reason_origin !== choice.reason_origin || detail.notes_version !== choice.notes_version)) {
+    } else if (!editing && (!detail || detail.reason !== choice.reason || detail.reason_origin !== choice.reason_origin ||
+      detail.notes_version !== choice.notes_version || detail.diff_revision !== choice.diff_revision || detail.history_id !== choice.history_id ||
+      detail.source !== choice.source || detail.tool !== choice.tool)) {
       void loadDetail(choice.id, file?.position);
     }
     renderList();
   } catch (error) {
     if (currentView === view && (!request || request === listRequest)) {
       renderConnection(null, error);
-      if (!detail) placeholder('无法读取变动记录', '检查本地服务是否仍在运行。');
+      if (!detail) placeholder(t('historyError'), t('serverHint'));
     }
   } finally {
     if (more) $('more').disabled = false;
@@ -324,53 +378,74 @@ function selectChange(id, { emptyRepo, paused } = {}) {
   $('reason-form').hidden = true;
   renderList();
   if (selected) {
-    placeholder('正在读取变动', '');
+    placeholder(t('loadingChanges'), '');
     void loadDetail(selected);
   } else if (emptyRepo && paused) {
-    placeholder('记录已暂停', '可以在「监测设置」里重新开启这个工程。');
+    placeholder(t('paused'), t('resumeHint'));
+  } else if (emptyRepo && changeView === 'current') {
+    placeholder(t('noCurrentChanges'), t('currentChangesHint'));
   } else if (emptyRepo && branch) {
-    placeholder('这个分支还没有变动记录', '可以切换分支查看其他记录。');
+    placeholder(t('noBranchHistory'), t('otherBranchHint'));
   } else if (emptyRepo) {
-    placeholder('还没有代码变动', '保存一次修改后，新的 diff 会出现在这里。');
+    placeholder(t('noHistory'), t('saveFileHint'));
   } else {
-    placeholder('没有匹配的变动', '可以清除搜索词或切换来源。');
+    placeholder(t('noResults'), t('clearFilters'));
   }
 }
 
 async function loadDetail(id, position) {
   const request = ++detailRequest;
   try {
-    const data = await api(projectRoute(`/api/changes/${id}`));
+    const data = await api(projectRoute(`${changesApi()}/${id}`));
     if (selected !== data.id || request !== detailRequest) return;
     detail = data;
     $('placeholder').hidden = true;
     $('detail').hidden = false;
-    $('detail-source').textContent = labels[data.source];
+    $('detail-source').textContent = sourceName(data.source);
     $('detail-source').className = `source ${data.source}`;
     $('detail-tool').textContent = data.tool ?? '';
     $('detail-tool').hidden = !data.tool;
     $('detail-time').dateTime = new Date(data.time).toISOString();
-    $('detail-time').textContent = fullTime.format(data.time);
+    $('detail-time').textContent = dates.full.format(data.time);
     $('detail-title').textContent = fileSummary(data.files[0].path, data.file_count);
     $('detail-branch').textContent = branchName(data.branch);
-    $('detail-count').textContent = `${data.file_count} 个文件`;
+    $('detail-count').textContent = t('filesCount', data.file_count);
     $('detail-stats').replaceChildren(stats(data));
     $('file-count').textContent = data.file_count;
     renderReason();
     void selectFile(data.files.find(item => item.position === position) ?? data.files[0], { keepScroll: position !== undefined });
   } catch (error) {
-    if (selected === id && request === detailRequest) placeholder('无法读取变动', error.message);
+    if (selected === id && request === detailRequest) placeholder(t('detailError'), error.message);
   }
+}
+
+function changeOverview(change) {
+  const { notes, position, sample } = change.reason_evidence ?? {};
+  if (notes?.length) {
+    return {
+      label: t('sectionNotes'),
+      text: notes.map(note => note.trim().length > 200 ? `${note.trim().slice(0, 200)}…` : note.trim()).join('\n'),
+    };
+  }
+  const file = change.files.find(item => item.position === position) ?? change.files[0];
+  const action = file ? `${t(file.status)} ${file.path}` : t('workspaceUpdated');
+  const remaining = change.file_count - 1;
+  const files = remaining > 0 ? t('otherFiles', action, remaining) : `${action}${language === 'en' ? '.' : '。'}`;
+  const modeChanged = file?.old_mode && file?.new_mode && file.old_mode !== file.new_mode;
+  const details = sample ?? (modeChanged ? t('modeChanged', file.old_mode, file.new_mode) : fileLimitation(file?.limitation));
+  const totals = change.added || change.removed ? t('lineTotals', change.added, change.removed) : '';
+  return { label: t('overview'), text: [files, details, totals].filter(Boolean).join(' ') };
 }
 
 function renderReason() {
   const editor = !$('reason-form').hidden;
-  $('reason-origin').textContent = detail.reason_origin === 'agent' ? '代理提交' : detail.reason_origin === 'user' ? '手动填写' : '';
-  $('reason').textContent = detail.reason ?? '尚未记录原因。';
+  const summary = !detail.reason ? changeOverview(detail) : null;
+  $('reason-origin').textContent = summary?.label ?? t(detail.reason_origin === 'agent' ? 'sourceAgent' : 'sourceUser');
+  $('reason').textContent = detail.reason || summary.text;
   $('reason').hidden = editor;
-  $('reason').classList.toggle('missing', !detail.reason);
-  $('edit-reason').textContent = detail.reason ? '编辑' : '补写';
-  $('edit-reason').hidden = editor;
+  $('reason').classList.toggle('missing', Boolean(summary));
+  $('edit-reason').textContent = t(detail.reason ? 'edit' : 'addReason');
+  $('edit-reason').hidden = editor || changeView === 'current';
 }
 
 function renderFiles() {
@@ -381,7 +456,7 @@ function renderFiles() {
     button.type = 'button';
     button.setAttribute('aria-pressed', String(item.position === file.position));
     const code = element('span', `file-status ${item.status}`, codes[item.status]);
-    code.setAttribute('aria-label', statuses[item.status]);
+    code.setAttribute('aria-label', t(item.status));
     button.append(code, element('span', 'file-name', item.path), stats(item));
     button.addEventListener('click', () => void selectFile(item));
     if (focused && item.position === file.position) focus = button;
@@ -400,16 +475,16 @@ async function selectFile(item, { keepScroll = false } = {}) {
   if (!keepScroll) {
     diffLimit = 1500;
     hunks = null;
-    patchMessage = '正在加载 diff…';
+    patchMessage = t('loadDiff');
     renderDiff();
     $('diff-view').scrollTo(0, 0);
   }
   try {
-    const data = await api(projectRoute(`/api/changes/${id}/files/${item.position}`));
+    const data = await api(projectRoute(`${changesApi()}/${id}/files/${item.position}`));
     if (selected !== id || request !== fileRequest) return;
     hunks = data;
-    patchMessage = limitations[item.limitation] ?? (item.old_mode && item.new_mode && item.old_mode !== item.new_mode
-      ? `文件模式由 ${item.old_mode} 变为 ${item.new_mode}。` : '没有逐行文本差异。');
+    patchMessage = fileLimitation(item.limitation) || (item.old_mode && item.new_mode && item.old_mode !== item.new_mode
+      ? t('modeChanged', item.old_mode, item.new_mode) : t('noDiff'));
   } catch (error) {
     if (selected !== id || request !== fileRequest) return;
     patchMessage = error.message;
@@ -417,44 +492,26 @@ async function selectFile(item, { keepScroll = false } = {}) {
   renderDiff();
 }
 
-function describeHunk(hunk) {
-  const added = hunk.lines.filter(line => line.startsWith('+'));
-  const removed = hunk.lines.filter(line => line.startsWith('-'));
-  const describe = lines => {
-    const sample = lines.map(line => line.slice(1).trim()).find(Boolean);
-    if (!sample) return `${lines.length} 行空白`;
-    const snippet = `「${sample.length > 85 ? `${sample.slice(0, 85)}…` : sample}」`;
-    return lines.length === 1 ? snippet : `${snippet}等 ${lines.length} 行`;
-  };
-  if (added.length && removed.length) {
-    if (added.length === removed.length && added.every((line, index) => line.slice(1).trim() === removed[index].slice(1).trim())) {
-      return `调整了 ${added.length} 行的空白或换行。`;
-    }
-    return `将${describe(removed)}替换为${describe(added)}。`;
-  }
-  if (added.length) return `新增${describe(added)}。`;
-  if (removed.length) return `删除${describe(removed)}。`;
-  return '调整了文件末尾的换行。';
-}
-
 function hunkNote(hunk, index) {
   const note = element('div', `hunk-note${hunk.explanation ? '' : ' inferred'}`);
   const info = element('div', 'hunk-note-text');
-  const source = hunk.explanation_origin === 'agent' ? '代理说明' : hunk.explanation_origin === 'user' ? '手动填写' : '差异摘要';
-  info.append(element('span', 'hunk-label', source), element('p', '', hunk.explanation ?? describeHunk(hunk)));
-  const button = element('button', 'button subtle', hunk.explanation ? '编辑说明' : '补写原因');
+  const source = t(hunk.explanation_origin === 'agent' ? 'agentExplanation' : hunk.explanation_origin === 'user' ? 'sourceUser' : 'diffSummary');
+  info.append(element('span', 'hunk-label', source), element('p', '', hunk.explanation ?? describeHunk(hunk, language)));
+  note.append(info);
+  if (changeView === 'current') return note;
+  const button = element('button', 'button subtle', t(hunk.explanation ? 'editExplanation' : 'addExplanation'));
   button.type = 'button';
-  button.setAttribute('aria-label', `${button.textContent}（代码段 ${index + 1}）`);
+  button.setAttribute('aria-label', t('sectionLabel', button.textContent, index + 1));
   button.addEventListener('click', () => {
     following = false;
     hunkTarget = { project, id: detail.id, position: file.position, index };
-    $('hunk-location').textContent = `${file.path} · 代码段 ${index + 1}`;
+    $('hunk-location').textContent = t('sectionLocation', file.path, index + 1);
     $('hunk-explanation').value = hunk.explanation ?? '';
     $('hunk-error').textContent = '';
     $('hunk-dialog').showModal();
     $('hunk-explanation').focus();
   });
-  note.append(info, button);
+  note.append(button);
   return note;
 }
 
@@ -501,7 +558,7 @@ function renderDiff() {
   area.replaceChildren(patch);
   if (count >= diffLimit) {
     const controls = element('div', 'diff-message');
-    const more = element('button', 'button', '继续显示 diff');
+    const more = element('button', 'button', t('displayMoreDiff'));
     more.type = 'button';
     more.addEventListener('click', () => { diffLimit += 1500; renderDiff(); });
     controls.append(more);
@@ -518,6 +575,27 @@ function applyFilters() {
 
 const jsonOptions = data => ({ method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data) });
 
+$('appearance-settings').addEventListener('click', () => {
+  $('interface-language').value = language;
+  $('interface-theme').value = document.documentElement.dataset.theme ?? 'auto';
+  $('appearance-dialog').showModal();
+});
+$('interface-language').addEventListener('change', event => {
+  language = event.target.value === 'en' ? 'en' : 'zh-CN';
+  savePreference('focus-code-language', language);
+  dates = dateFormatters();
+  translateInterface();
+  renderList();
+  if (selected) void loadDetail(selected, file?.position);
+  void refresh();
+});
+$('interface-theme').addEventListener('change', event => {
+  const theme = event.target.value;
+  if (theme === 'light' || theme === 'dark') document.documentElement.dataset.theme = theme;
+  else delete document.documentElement.dataset.theme;
+  savePreference('focus-code-theme', theme);
+});
+
 $('tracking-settings').addEventListener('click', async () => {
   const request = ++trackingRequest;
   trackingTarget = project;
@@ -525,7 +603,8 @@ $('tracking-settings').addEventListener('click', async () => {
   $('tracking-fields').disabled = true;
   $('save-tracking').disabled = true;
   $('tracking-project-field').hidden = !project;
-  $('tracking-project-label').textContent = $('project').selectedOptions[0]?.textContent ?? '当前工程';
+  $('demo-tracking-help').hidden = true;
+  $('tracking-project-label').textContent = $('project').selectedOptions[0]?.textContent ?? t('currentProject');
   $('tracking-error').textContent = '';
   $('tracking-dialog').showModal();
   try {
@@ -534,9 +613,9 @@ $('tracking-settings').addEventListener('click', async () => {
     trackingInitial = settings;
     $('tracking-default').value = settings.defaultEnabled ? 'on' : 'off';
     $('tracking-project').value = settings.mode;
-    $('tracking-fields').disabled = $('save-tracking').disabled = !settings.editable;
-    if (settings.editable) $('tracking-default').focus();
-    else $('tracking-error').textContent = '请在实际记录页修改监测设置。';
+    $('demo-tracking-help').hidden = !settings.demo;
+    $('tracking-fields').disabled = $('save-tracking').disabled = false;
+    $('tracking-default').focus();
   } catch (error) {
     if (request === trackingRequest) $('tracking-error').textContent = error.message;
   }
@@ -544,7 +623,7 @@ $('tracking-settings').addEventListener('click', async () => {
 $('cancel-tracking').addEventListener('click', () => $('tracking-dialog').close());
 $('tracking-form').addEventListener('submit', async event => {
   event.preventDefault();
-  if (!trackingInitial?.editable || $('save-tracking').disabled) return;
+  if (!trackingInitial || $('save-tracking').disabled) return;
   const target = trackingTarget;
   const request = trackingRequest;
   const defaultEnabled = $('tracking-default').value === 'on';
@@ -569,6 +648,8 @@ $('tracking-form').addEventListener('submit', async event => {
   }
 });
 
+$('view-current').addEventListener('click', () => switchChangeView('current'));
+$('view-history').addEventListener('click', () => switchChangeView('history'));
 $('project').addEventListener('change', event => switchProject(event.target.value));
 $('branch').addEventListener('change', event => switchBranch(event.target.value));
 $('add-project').addEventListener('click', () => {
@@ -659,9 +740,16 @@ $('reason-form').addEventListener('submit', async event => {
   }
 });
 window.addEventListener('keydown', event => {
-  if (event.key !== '/' || event.metaKey || event.ctrlKey || event.altKey || event.target.matches?.('input, textarea, select, [contenteditable]')) return;
+  if (document.querySelector('dialog[open]') || event.key !== '/' || event.metaKey || event.ctrlKey || event.altKey || event.target.matches?.('input, textarea, select, [contenteditable]')) return;
   event.preventDefault();
   $('search').focus();
 });
-void refresh();
-setInterval(() => void refresh(), 1800);
+async function pollTimeline() {
+  if (!document.hidden) await refresh();
+  setTimeout(pollTimeline, changeView === 'current' ? 800 : 1500);
+}
+
+translateInterface();
+updateViewButtons();
+void pollTimeline();
+document.addEventListener('visibilitychange', () => { if (!document.hidden) void refresh(); });

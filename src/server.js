@@ -1,12 +1,17 @@
 import { createServer } from 'node:http';
 import { readFileSync } from 'node:fs';
+import { CurrentChanges } from './current.js';
 import { ProjectCatalog } from './projects.js';
 import { trackingModes } from './tracking.js';
+import { translate } from '../web/i18n.js';
 import { openBrowser, viewerIdentity, viewerPorts } from './viewer.js';
 
 const assets = new Map([
   ['/', ['index.html', 'text/html; charset=utf-8']],
   ['/app.js', ['app.js', 'text/javascript; charset=utf-8']],
+  ['/diff-summary.js', ['diff-summary.js', 'text/javascript; charset=utf-8']],
+  ['/i18n.js', ['i18n.js', 'text/javascript; charset=utf-8']],
+  ['/theme.js', ['theme.js', 'text/javascript; charset=utf-8']],
   ['/style.css', ['style.css', 'text/css; charset=utf-8']],
 ].map(([route, [name, type]]) => [route, { type, content: readFileSync(new URL(`../web/${name}`, import.meta.url)) }]));
 
@@ -50,11 +55,13 @@ export async function serve(initial, { port, demo = false, open = true, director
   const state = viewerIdentity(catalog.directory);
   let address;
   const server = createServer(async (request, response) => {
+    const language = request.headers['accept-language'] === 'en' ? 'en' : 'zh-CN';
+    const failure = (status, key) => json(response, status, { error: translate(language, key) });
     response.setHeader('Cache-Control', 'no-store');
     response.setHeader('X-Content-Type-Options', 'nosniff');
     response.setHeader('Content-Security-Policy', "default-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'");
     if (request.headers.host !== address.host || (request.headers.origin && request.headers.origin !== address.origin)) {
-      return json(response, 403, { error: '只接受本地界面请求。' });
+      return failure(403, 'localRequest');
     }
     try {
       const url = new URL(request.url, address);
@@ -66,7 +73,7 @@ export async function serve(initial, { port, demo = false, open = true, director
         return response.end(content);
       }
       if (method === 'POST' && (request.headers.origin !== address.origin || request.headers['content-type']?.split(';')[0] !== 'application/json')) {
-        return json(response, 403, { error: '请求来源无效。' });
+        return failure(403, 'invalidOrigin');
       }
       if (method === 'GET' && pathname === '/api/status') return json(response, 200, { app: 'focus-code', demo, state });
       if (pathname === '/api/projects') {
@@ -74,37 +81,53 @@ export async function serve(initial, { port, demo = false, open = true, director
         if (method === 'POST') {
           const body = await readJson(request);
           const added = typeof body?.path === 'string' && catalog.open(body.path);
-          if (!added) return json(response, 400, { error: '请输入有效的 Git 工作树绝对路径。' });
+          if (!added) return failure(400, 'invalidWorktree');
           catalog.poll(catalog.get(added.id));
           return json(response, 201, { projects: catalog.list(), selected: added.id });
         }
       }
       if (pathname === '/api/tracking') {
         const id = searchParams.get('project');
-        const project = id ? catalog.get(id) : null;
-        if (id && !project) return json(response, 404, { error: '找不到这个工程。' });
+        const project = id ? catalog.get(id) : demo ? catalog.initial : null;
+        if (id && !project) return failure(404, 'missingProject');
+        const settingsStore = project?.demo ? project.journal.tracking : catalog.tracking;
         if (method === 'GET') {
-          return json(response, 200, { ...catalog.tracking.get(project?.root), editable: !demo });
+          return json(response, 200, { ...settingsStore.get(project?.root), editable: true, demo: Boolean(project?.demo) });
         }
         if (method === 'POST') {
-          if (demo) return json(response, 403, { error: '请在实际记录页修改监测设置。' });
           const body = await readJson(request);
           const { defaultEnabled, mode } = body ?? {};
           const invalidDefault = defaultEnabled !== undefined && typeof defaultEnabled !== 'boolean';
           const invalidOverride = mode !== undefined && (!project || !trackingModes.includes(mode));
           if ((defaultEnabled === undefined && mode === undefined) || invalidDefault || invalidOverride) {
-            return json(response, 400, { error: '请选择有效的监测设置。' });
+            return failure(400, 'invalidTracking');
           }
-          const settings = catalog.tracking.update({ defaultEnabled, mode, root: project?.root });
+          const settings = settingsStore.update({ defaultEnabled, mode, root: project?.root });
           if (defaultEnabled !== undefined) {
-            for (const entry of catalog.projects.values()) catalog.poll(entry);
+            for (const entry of catalog.projects.values()) {
+              if (Boolean(entry.demo) === Boolean(project?.demo)) catalog.poll(entry);
+            }
           } else if (settings.enabled) catalog.poll(project);
-          return json(response, 200, { ...settings, editable: true });
+          return json(response, 200, { ...settings, editable: true, demo: Boolean(project?.demo) });
         }
       }
       const project = catalog.get(searchParams.get('project'));
-      if (!project) return json(response, 404, { error: '找不到这个工程。' });
+      if (!project) return failure(404, 'missingProject');
       const { journal } = project;
+      if (method === 'GET' && (pathname === '/api/current' || pathname.startsWith('/api/current/'))) {
+        const current = project.current ??= new CurrentChanges(journal);
+        if (pathname === '/api/current') {
+          const { tracking, branch } = current.refresh();
+          return json(response, 200, {
+            ...current.list({ branch: searchParams.get('branch'), source: searchParams.get('source'), search: searchParams.get('q')?.slice(0, 200) }),
+            repository: journal.repository(branch), projects: catalog.list(), demo: project.demo, scanError: project.error, tracking,
+          });
+        }
+        const match = /^\/api\/current\/([a-f\d]{64})(\/files\/0)?$/.exec(pathname);
+        if (!match || !journal.tracking.get(project.root).enabled) return failure(404, 'missingChange');
+        const item = match[2] ? current.patch(match[1]) : current.detail(match[1], language);
+        return item ? json(response, 200, item) : failure(404, 'missingChange');
+      }
       if (method === 'GET' && pathname === '/api/changes') {
         const before = Number(searchParams.get('before'));
         return json(response, 200, { ...journal.list({
@@ -115,35 +138,36 @@ export async function serve(initial, { port, demo = false, open = true, director
       const match = /^\/api\/changes\/(\d+)(?:\/(reason|files\/(\d+)(?:\/hunks\/(\d+)\/explanation)?))?$/.exec(pathname);
       if (match) {
         const id = Number(match[1]);
-        if (!Number.isSafeInteger(id)) return json(response, 404, { error: '找不到这条记录。' });
+        if (!Number.isSafeInteger(id)) return failure(404, 'missingChange');
         const [, , action, position, hunk] = match;
+        const detail = () => journal.detail(id, { includeReasonEvidence: true, language });
         if (method === 'GET' && hunk === undefined) {
-          const item = position !== undefined ? journal.patch(id, Number(position)) : action ? null : journal.detail(id);
-          return json(response, item ? 200 : 404, item ?? { error: '找不到这条记录。' });
+          const item = position !== undefined ? journal.patch(id, Number(position)) : action ? null : detail();
+          return item ? json(response, 200, item) : failure(404, 'missingChange');
         }
         if (method === 'POST' && hunk !== undefined) {
           const body = await readJson(request);
           if (typeof body?.explanation !== 'string' || body.explanation.length > 1000) {
-            return json(response, 400, { error: '说明最多 1000 字符。' });
+            return failure(400, 'explanationLimit');
           }
           const saved = journal.saveHunkNotes(id, [[Number(position), Number(hunk), body.explanation]]);
           return saved ? json(response, 200, journal.patch(id, Number(position)))
-            : json(response, 404, { error: '找不到这个代码段。' });
+            : failure(404, 'missingSection');
         }
         if (method === 'POST' && action === 'reason') {
           const body = await readJson(request);
           if (typeof body?.reason !== 'string' || body.reason.length > 1000) {
-            return json(response, 400, { error: '原因最多 1000 字符。' });
+            return failure(400, 'reasonLimit');
           }
           return journal.editReason(id, body.reason)
-            ? json(response, 200, journal.detail(id))
-            : json(response, 404, { error: '找不到这条记录。' });
+            ? json(response, 200, detail())
+            : failure(404, 'missingChange');
         }
       }
-      return json(response, 404, { error: '找不到此页面。' });
+      return failure(404, 'missingPage');
     } catch (error) {
       console.error(`Focus Code: ${error.message}`);
-      return json(response, 500, { error: '读取变动记录失败，请查看终端。' });
+      return failure(500, 'apiFailure');
     }
   });
   const candidates = port === undefined ? [...viewerPorts, 0] : [port];

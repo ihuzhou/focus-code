@@ -1,23 +1,35 @@
+import { execFile } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import type { ExtensionAPI, ExtensionContext } from '@earendil-works/pi-coding-agent';
-import { handleEvent } from '../src/agent.js';
 
 const cli = fileURLToPath(new URL('../src/cli.js', import.meta.url));
 
-const observed = new Set(['edit', 'write', 'bash', 'powershell', 'apply_patch', 'codemode']);
+const observed = new Set(['edit', 'write', 'bash', 'powershell', 'apply_patch', 'exec_command', 'codemode']);
+
+type FocusFeedback = {
+  systemMessage?: string;
+  hookSpecificOutput?: { additionalContext?: string };
+};
 
 export default function (pi: ExtensionAPI) {
   const calls = new Set<string>();
 
   function observe(kind: string, ctx: ExtensionContext, tool?: string, id?: string, input?: unknown) {
-    try {
-      return handleEvent('pi', {
+    return new Promise<FocusFeedback | undefined>(resolve => {
+      const process = execFile('node', ['--disable-warning=ExperimentalWarning', cli, 'hook', 'pi'], {
+        cwd: ctx.cwd, timeout: 15000, maxBuffer: 64 * 1024,
+      }, (error, stdout, stderr) => {
+        const warning = stderr.trim() || error?.message;
+        if (warning && ctx.hasUI) ctx.ui.notify(warning, 'warning');
+        try { resolve(stdout ? JSON.parse(stdout) : undefined); }
+        catch { resolve(undefined); }
+      });
+      process.stdin?.on('error', () => {});
+      process.stdin?.end(JSON.stringify({
         hook_event_name: kind, cwd: ctx.cwd, session_id: ctx.sessionManager.getSessionId(),
         tool_name: tool, tool_use_id: id, tool_input: input,
-      });
-    } catch (error) {
-      if (ctx.hasUI) ctx.ui.notify(`Focus Code: ${String(error)}`, 'warning');
-    }
+      }));
+    });
   }
 
   pi.registerCommand('focus-code', {
@@ -40,27 +52,27 @@ export default function (pi: ExtensionAPI) {
     },
   });
 
-  pi.on('before_agent_start', (event, ctx) => {
-    const text = observe('UserPromptSubmit', ctx)?.hookSpecificOutput?.additionalContext;
+  pi.on('before_agent_start', async (event, ctx) => {
+    const text = (await observe('UserPromptSubmit', ctx))?.hookSpecificOutput?.additionalContext;
     if (text) event.systemPromptOptions.sections.focus_code = text;
     else delete event.systemPromptOptions.sections.focus_code;
   });
-  pi.on('tool_call', (event, ctx) => {
+  pi.on('tool_call', async (event, ctx) => {
     if (!observed.has(event.toolName)) return;
     calls.add(event.toolCallId);
-    observe('PreToolUse', ctx, event.toolName, event.toolCallId, event.input);
+    await observe('PreToolUse', ctx, event.toolName, event.toolCallId, event.input);
   });
-  pi.on('tool_result', (event, ctx) => {
+  pi.on('tool_result', async (event, ctx) => {
     if (!calls.delete(event.toolCallId)) return;
     const kind = event.isError ? 'PostToolUseFailure' : 'PostToolUse';
-    const feedback = observe(kind, ctx, event.toolName, event.toolCallId, event.input);
+    const feedback = await observe(kind, ctx, event.toolName, event.toolCallId, event.input);
     if (feedback?.systemMessage && ctx.hasUI) ctx.ui.notify(feedback.systemMessage, 'info');
     const text = feedback?.hookSpecificOutput?.additionalContext;
     if (text) return { content: [...event.content, { type: 'text', text }], structuredContent: event.structuredContent };
   });
-  pi.on('tool_execution_end', (event, ctx) => {
-    if (calls.delete(event.toolCallId)) observe('PostToolUse', ctx, event.toolName, event.toolCallId);
+  pi.on('tool_execution_end', async (event, ctx) => {
+    if (calls.delete(event.toolCallId)) await observe('PostToolUse', ctx, event.toolName, event.toolCallId, event.args);
   });
-  pi.on('agent_settled', (_event, ctx) => { observe('Stop', ctx); });
-  pi.on('session_shutdown', (_event, ctx) => { observe('SessionEnd', ctx); });
+  pi.on('agent_settled', async (_event, ctx) => { await observe('Stop', ctx); });
+  pi.on('session_shutdown', async (_event, ctx) => { await observe('SessionEnd', ctx); });
 }

@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { mkdirSync, realpathSync } from 'node:fs';
 import { basename, dirname, join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
+import { addDiffSummaries, describeHunk } from '../web/diff-summary.js';
 import { fileDiff, hash, repositoryBranch, repositoryBranches, scanFiles } from './repository.js';
 import { stateDirectory, TrackingSettings } from './tracking.js';
 
@@ -45,6 +46,7 @@ export class Journal {
         limitation TEXT, old_mode TEXT, new_mode TEXT, hunks TEXT NOT NULL,
         PRIMARY KEY (change_id, position)
       );
+      CREATE INDEX IF NOT EXISTS files_path_history ON files (path, change_id);
       CREATE TABLE IF NOT EXISTS hunk_notes (
         change_id INTEGER NOT NULL, position INTEGER NOT NULL, hunk INTEGER NOT NULL,
         explanation TEXT, origin TEXT, revision INTEGER NOT NULL,
@@ -267,28 +269,31 @@ export class Journal {
     `).all(...args, limit + 1);
     const hasMore = changes.length > limit;
     if (hasMore) changes.pop();
-    const current = this.getMeta('branch');
-    const branches = new Set(this.getMeta('localBranches') ?? []);
-    for (const item of this.db.prepare('SELECT DISTINCT branch FROM changes').all()) branches.add(item.branch);
-    if (current) branches.add(current);
     const scope = branch ? 'WHERE branch = ?' : '';
     const stats = this.db.prepare(`
       SELECT count(*) changes, count(DISTINCT CASE WHEN session IS NOT NULL THEN source END) agents, max(id) latest
       FROM changes ${scope}
     `).get(...(branch ? [branch] : []));
     return {
-      repository: { root: this.root, name: basename(this.root), branch: current, branches: [...branches].sort() },
+      repository: this.repository(),
       stats,
       changes,
       hasMore,
     };
   }
 
+  repository(current = this.getMeta('branch')) {
+    const branches = new Set(this.getMeta('localBranches') ?? []);
+    for (const item of this.db.prepare('SELECT DISTINCT branch FROM changes').all()) branches.add(item.branch);
+    if (current) branches.add(current);
+    return { root: this.root, name: basename(this.root), branch: current, branches: [...branches].sort() };
+  }
+
   isFirstChange(id, source, session) {
     return this.db.prepare('SELECT min(id) id FROM changes WHERE source = ? AND session = ?').get(source, session).id === id;
   }
 
-  detail(id) {
+  detail(id, { includeReasonEvidence = false, language = 'zh-CN' } = {}) {
     const change = this.db.prepare(`
       SELECT c.*, (SELECT max(revision) FROM hunk_notes WHERE change_id = c.id) notes_version
       FROM changes c WHERE c.id = ?
@@ -298,7 +303,24 @@ export class Journal {
       SELECT position, path, status, added, removed, limitation, old_mode, new_mode
       FROM files WHERE change_id = ? ORDER BY position
     `).all(id);
-    return { ...change, files };
+    const reasonEvidence = includeReasonEvidence && !change.reason ? this.reasonEvidence(id, files, language) : undefined;
+    return { ...change, files, ...(reasonEvidence ? { reason_evidence: reasonEvidence } : {}) };
+  }
+
+  reasonEvidence(id, files, language) {
+    const notes = this.db.prepare(`
+      SELECT explanation FROM hunk_notes
+      WHERE change_id = ? AND explanation IS NOT NULL
+      GROUP BY explanation ORDER BY min(position), min(hunk) LIMIT 2
+    `).all(id).map(note => note.explanation);
+    if (notes.length) return { notes };
+
+    const relevant = files.reduce((current, file) => !current || file.added + file.removed > current.added + current.removed ? file : current, null);
+    if (!relevant) return {};
+    const file = this.db.prepare('SELECT hunks FROM files WHERE change_id = ? AND position = ?').get(id, relevant.position);
+    const hunks = addDiffSummaries(JSON.parse(file.hunks));
+    const sample = hunks.find(hunk => hunk.summary) ?? hunks[0];
+    return { position: relevant.position, sample: sample ? describeHunk(sample, language) : null };
   }
 
   patch(id, position) {
@@ -306,7 +328,7 @@ export class Journal {
     if (!file) return null;
     const notes = new Map(this.db.prepare('SELECT hunk, explanation, origin FROM hunk_notes WHERE change_id = ? AND position = ?').all(id, position)
       .filter(note => note.explanation).map(note => [note.hunk, note]));
-    return JSON.parse(file.hunks).map((hunk, index) => {
+    return addDiffSummaries(JSON.parse(file.hunks)).map((hunk, index) => {
       const note = notes.get(index);
       return note ? { ...hunk, explanation: note.explanation, explanation_origin: note.origin } : hunk;
     });
@@ -314,7 +336,7 @@ export class Journal {
 
   reviewHunks(id, source, session, offset = 0) {
     if (!this.tracking.get(this.root).enabled) return null;
-    const change = this.detail(id);
+    const change = this.db.prepare('SELECT source, session FROM changes WHERE id = ?').get(id);
     if (change?.source !== source || change.session !== session) return null;
     const files = this.db.prepare('SELECT position, path, hunks FROM files WHERE change_id = ? ORDER BY position').iterate(id);
     const segments = [];
@@ -331,6 +353,10 @@ export class Journal {
   }
 
   saveHunkNotes(id, notes, actor = null) {
+    return this.saveExplanations(id, { notes, actor })?.notesSaved ?? null;
+  }
+
+  saveExplanations(id, { notes, actor, reason }) {
     const save = () => {
       if (actor) {
         const owner = this.db.prepare('SELECT source, session FROM changes WHERE id = ?').get(id);
@@ -341,6 +367,10 @@ export class Journal {
         if (!patches.has(position)) patches.set(position, this.patch(id, position));
         if (!patches.get(position)?.[index]) return null;
       }
+      const reasonSaved = Boolean(actor && reason && this.db.prepare(`
+        UPDATE changes SET reason = ?, reason_origin = 'agent' WHERE id = ? AND reason IS NULL
+      `).run(reason, id).changes);
+      if (!notes.length) return { notesSaved: 0, reasonSaved };
       const { revision } = this.db.prepare('SELECT coalesce(max(revision), 0) + 1 revision FROM hunk_notes WHERE change_id = ?').get(id);
       const write = this.db.prepare(`
         INSERT INTO hunk_notes VALUES (?, ?, ?, ?, ?, ?)
@@ -353,7 +383,7 @@ export class Journal {
         const explanation = text.trim() || null;
         saved += Number(write.run(id, position, index, explanation, explanation ? (actor ? 'agent' : 'user') : null, revision).changes);
       }
-      return saved;
+      return { notesSaved: saved, reasonSaved };
     };
     return actor ? this.trackedTransaction(save) : this.transaction(save);
   }

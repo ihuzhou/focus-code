@@ -11,6 +11,7 @@ import { Journal } from '../src/journal.js';
 import { ProjectCatalog } from '../src/projects.js';
 import { serve } from '../src/server.js';
 import { TrackingSettings } from '../src/tracking.js';
+import { addDiffSummaries, describeHunk } from '../web/diff-summary.js';
 
 function fixture(t) {
   const dir = realpathSync(mkdtempSync(join(tmpdir(), 'focus-test-')));
@@ -500,6 +501,66 @@ test('automatic viewer startup skips occupied default ports and reports an expli
   }
 });
 
+test('diff summaries explain why a shared import is used across hunks', t => {
+  const { journal, write } = fixture(t);
+  const padding = prefix => Array.from({ length: 14 }, (_, index) => `const ${prefix}${index} = ${index};`).join('\n');
+  const start = `const ready = true;\n${padding('first')}`;
+  const end = `${padding('last')}\nfunction render(hunk) {\n  return hunk.explanation ?? describeHunk(hunk);\n}\n`;
+  write('app.js', `${start}\nfunction describeHunk(hunk) {\n  return hunk.lines.join('');\n}\n${end}`);
+  journal.poll();
+  write('app.js', `import { describeHunk } from './diff-summary.js';\n\n${start}\n${end}`);
+  journal.poll();
+  const hunks = journal.patch(1, 0);
+  assert.ok(hunks.length > 1);
+  const explanation = describeHunk(hunks[0]);
+  assert.match(explanation, /把 describeHunk 从本文件内的实现改为复用/);
+  assert.match(explanation, /代码段缺少逐段说明时，页面仍可生成摘要/);
+  assert.match(describeHunk(hunks[0], 'en'), /Reuses describeHunk from .\/diff-summary\.js/);
+  assert.equal(journal.detail(1, { includeReasonEvidence: true }).reason_evidence.sample, explanation);
+  const older = addDiffSummaries([
+    { lines: ["+import { describeHunk } from './diff-summary.js';", '+'] },
+    { lines: ['-function describeHunk(hunk) {', ' return hunk.explanation ?? describeHunk(hunk);'] },
+  ]);
+  assert.equal(describeHunk(older[0]), explanation);
+  const archivedWithoutCalls = addDiffSummaries(hunks.map(({ summary, ...hunk }) => hunk));
+  assert.match(describeHunk(archivedWithoutCalls[0]), /复用 .\/diff-summary\.js 中的同名函数/);
+  assert.doesNotMatch(describeHunk(archivedWithoutCalls[0]), /缺少逐段说明/);
+  const nullable = addDiffSummaries([{ lines: ['-return user.name;', '+return user?.name;'] }]);
+  assert.match(describeHunk(nullable[0]), /避免访问属性时报错/);
+  const unresolved = addDiffSummaries([{ lines: ["+import { format } from './text.js';"] }]);
+  assert.equal(unresolved[0].summary, undefined);
+});
+
+test('post-edit hooks can recover an overall reason without overwriting explicit reasons', t => {
+  const { dir, root, journal, write } = fixture(t);
+  const hook = (kind, session, tool, input) => execFileSync(process.execPath, ['--disable-warning=ExperimentalWarning', join(import.meta.dirname, '../src/cli.js'), 'hook', 'codex'], {
+    input: JSON.stringify({ cwd: root, hook_event_name: kind, session_id: session, tool_use_id: 'edit', tool_name: tool, tool_input: input }),
+    env: { ...process.env, FOCUS_HOME: join(dir, 'state') }, encoding: 'utf8',
+  });
+  hook('PreToolUse', 's1', 'apply_patch', {});
+  write('session.js', 'const safe = token?.value;\n');
+  const post = JSON.parse(hook('PostToolUse', 's1', 'apply_patch', {})).hookSpecificOutput.additionalContext;
+  assert.match(post, /No overall reason was recorded/);
+  assert.match(post, /"reason":/);
+  const submit = (session, data) => hook('PostToolUse', session, 'Bash', { command: `: # focus-explain: ${JSON.stringify(data)}` });
+  const reason = 'Handle a session lifecycle without a token';
+  assert.match(submit('other-session', { change: 1, reason }), /unknown change/);
+  assert.match(submit('s1', { change: 1, reason, notes: [[0, 99, 'Unknown hunk']] }), /unknown change/);
+  assert.equal(journal.detail(1).reason, null);
+  assert.match(submit('s1', { change: 1, reason }), /Overall reason recorded/);
+  assert.equal(journal.detail(1).reason, reason);
+  assert.equal(journal.detail(1).reason_origin, 'agent');
+  journal.editReason(1, 'Document a verified reason instead');
+  assert.match(submit('s1', { change: 1, reason, notes: [[0, 0, 'Optional chaining handles absent tokens']] }), /Existing overall reason retained/);
+  assert.equal(journal.detail(1).reason, 'Document a verified reason instead');
+  assert.equal(journal.patch(1, 0)[0].explanation, 'Optional chaining handles absent tokens');
+  hook('PreToolUse', 's1', 'apply_patch', {});
+  write('asset.bin', Buffer.from([0, 1, 2]));
+  const binary = JSON.parse(hook('PostToolUse', 's1', 'apply_patch', {})).hookSpecificOutput.additionalContext;
+  assert.match(binary, /Changed files: "asset.bin"/);
+  assert.match(submit('s1', { change: 2, reason: 'Use this binary fixture in the test' }), /Overall reason recorded/);
+});
+
 test('HTTP history survives reloads and permits only same-origin reason edits', async t => {
   const { dir, root, journal, write } = fixture(t);
   journal.poll();
@@ -507,6 +568,16 @@ test('HTTP history survives reloads and permits only same-origin reason edits', 
   journal.poll();
   const { server, address } = await serve(journal, { port: 0, open: false });
   try {
+    const detail = async language => fetch(new URL('/api/changes/1', address), {
+      headers: language ? { 'Accept-Language': language } : undefined,
+    }).then(response => response.json());
+    const original = await detail();
+    assert.deepEqual(original.reason_evidence, { position: 0, sample: '新增「export const ready = true;」。' });
+    assert.deepEqual((await detail('en')).reason_evidence, { position: 0, sample: 'Added “export const ready = true;”.' });
+    const missing = await fetch(new URL('/api/changes/999', address), { headers: { 'Accept-Language': 'en' } });
+    assert.equal((await missing.json()).error, 'Change record not found.');
+    journal.saveHunkNotes(1, [[0, 0, 'Expose the current readiness state']]);
+    assert.deepEqual((await detail('en')).reason_evidence, { notes: ['Expose the current readiness state'] });
     const url = new URL('/api/changes/1/reason', address);
     const options = { method: 'POST', body: JSON.stringify({ reason: 'Document readiness' }), headers: { 'Content-Type': 'application/json' } };
     assert.equal((await fetch(url, { ...options, headers: { ...options.headers, Origin: 'https://example.test' } })).status, 403);
@@ -514,6 +585,7 @@ test('HTTP history survives reloads and permits only same-origin reason edits', 
     assert.equal(edit.status, 200);
     const list = await fetch(new URL('/api/changes?q=readiness', address)).then(response => response.json());
     assert.equal(list.changes[0].reason_origin, 'user');
+    assert.equal((await detail()).reason_evidence, undefined);
     const patch = await fetch(new URL('/api/changes/1/files/0', address)).then(response => response.json());
     assert.deepEqual(patch[0].lines, ['+export const ready = true;']);
     const reopened = new Journal(root, join(dir, 'state'));
@@ -522,6 +594,70 @@ test('HTTP history survives reloads and permits only same-origin reason edits', 
     } finally {
       reopened.close();
     }
+  } finally {
+    await new Promise(resolve => server.close(resolve));
+  }
+});
+
+test('current changes show Pi edits before completion and remove deleted or reverted content', async t => {
+  const { root, journal, write } = fixture(t);
+  write('app.js', 'const initial = true;\n');
+  execFileSync('git', ['add', 'app.js'], { cwd: root });
+  execFileSync('git', ['-c', 'user.name=Focus Test', '-c', 'user.email=focus@example.test', 'commit', '--no-gpg-sign', '-qm', 'Baseline'], { cwd: root });
+  journal.poll();
+  const { server, address } = await serve(journal, { port: 0, open: false });
+  try {
+    const get = path => fetch(new URL(path, address)).then(response => response.json());
+    assert.deepEqual((await get('/api/current')).changes, []);
+    journal.setReason('pi', 'native-session', 'Expose a feature flag');
+    journal.startTool('pi', 'native-session', 'call-1', 'edit');
+    write('app.js', 'const initial = true;\nconst feature = true;\n');
+    const live = await get('/api/current?source=pi');
+    assert.equal(live.changes.length, 1);
+    const change = live.changes[0];
+    assert.equal(change.first_path, 'app.js');
+    assert.equal(change.source, 'pi');
+    assert.equal(change.reason, 'Expose a feature flag');
+    assert.equal((await get('/api/changes?source=pi')).changes.length, 0);
+    const patch = await get(`/api/current/${change.id}/files/0`);
+    assert.ok(patch[0].lines.includes('+const feature = true;'));
+    const record = journal.endTool('pi', 'native-session', 'call-1');
+    assert.equal((await get('/api/current?source=pi')).changes[0].history_id, record);
+    write('app.js', 'const initial = true;\n');
+    assert.deepEqual((await get('/api/current')).changes, []);
+    assert.equal((await get('/api/changes?source=pi')).changes.length, 1);
+    write('new.js', 'const created = true;\n');
+    const untracked = await get('/api/current');
+    assert.equal(untracked.changes[0].first_path, 'new.js');
+    execFileSync('git', ['add', 'new.js'], { cwd: root });
+    unlinkSync(join(root, 'new.js'));
+    assert.deepEqual((await get('/api/current')).changes, []);
+  } finally {
+    await new Promise(resolve => server.close(resolve));
+  }
+});
+
+test('demo tracking settings can be edited without changing real project settings', async t => {
+  const { dir, journal } = fixture(t);
+  const directory = join(dir, 'real-state');
+  const { server, address } = await serve(journal, { port: 0, open: false, demo: true, directory });
+  try {
+    const projects = await fetch(new URL('/api/projects', address)).then(response => response.json());
+    const url = new URL(`/api/tracking?project=${projects.selected}`, address);
+    const original = await fetch(url).then(response => response.json());
+    assert.equal((await fetch(new URL('/api/tracking', address)).then(response => response.json())).demo, true);
+    assert.equal(original.editable, true);
+    assert.equal(original.demo, true);
+    const update = await fetch(url, {
+      method: 'POST', headers: { 'Content-Type': 'application/json', Origin: address.origin },
+      body: JSON.stringify({ defaultEnabled: false, mode: 'off' }),
+    });
+    assert.equal(update.status, 200);
+    assert.equal((await update.json()).enabled, false);
+    assert.equal(journal.tracking.get(journal.root).enabled, false);
+    const real = new TrackingSettings(directory);
+    try { assert.equal(real.get().defaultEnabled, true); }
+    finally { real.close(); }
   } finally {
     await new Promise(resolve => server.close(resolve));
   }

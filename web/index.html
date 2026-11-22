@@ -3,44 +3,54 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="theme-color" content="#f6f5f2">
+  <meta name="color-scheme" content="light dark">
   <link rel="icon" href="data:,">
   <title>Focus Code · 变动时间线</title>
+  <script src="/theme.js"></script>
   <link rel="stylesheet" href="/style.css">
 </head>
 <body>
   <header class="topbar">
     <div class="top-inner">
-      <a class="wordmark" href="/" aria-label="Focus Code 首页"><span class="mark" aria-hidden="true"><i></i><i></i><i></i><i></i><b></b></span>Focus<span class="wordmark-code">Code</span></a>
+      <a class="wordmark" href="/" aria-label="Focus Code 首页" data-i18n-aria="home"><span class="mark" aria-hidden="true"><i></i><i></i><i></i><i></i><b></b></span>Focus<span class="wordmark-code">Code</span></a>
       <div class="header-repo">
         <span class="icon folder" aria-hidden="true"></span>
-        <select id="project" aria-label="切换工程"><option value="">加载工程…</option></select>
+        <select id="project" aria-label="切换工程" data-i18n-aria="switchProject"><option value="" data-i18n="loadingProject">加载工程…</option></select>
         <span class="divider" aria-hidden="true"></span>
-        <select id="branch" aria-label="筛选 Git 分支" disabled><option value="">所有分支</option></select>
+        <select id="branch" aria-label="筛选 Git 分支" data-i18n-aria="filterBranch" disabled><option value="" data-i18n="allBranches">所有分支</option></select>
       </div>
-      <div class="connection"><span id="demo" class="demo" hidden>演示数据</span><span id="signal" class="signal" aria-hidden="true"></span><span id="connection">连接中</span></div>
+      <div class="connection"><span id="demo" class="demo" data-i18n="demo" hidden>演示数据</span><span id="signal" class="signal" aria-hidden="true"></span><span id="connection" data-i18n="connecting">连接中</span></div>
     </div>
   </header>
   <main class="page">
     <div class="page-heading">
-      <h1>变动时间线</h1>
-      <div class="heading-actions"><button type="button" id="add-project" class="button">＋ 添加工程</button><button type="button" id="tracking-settings" class="button">监测设置</button><button type="button" id="refresh" class="button" title="刷新记录"><span class="refresh-icon" aria-hidden="true">↻</span> 刷新</button></div>
+      <h1 data-i18n="timeline">变动时间线</h1>
+      <div class="heading-actions">
+        <button type="button" id="add-project" class="button"><span aria-hidden="true">＋</span><span data-i18n="addProject">添加工程</span></button>
+        <button type="button" id="tracking-settings" class="button" data-i18n="trackingSettings">监测设置</button>
+        <button type="button" id="appearance-settings" class="button" data-i18n="appearance">界面设置</button>
+        <button type="button" id="refresh" class="button" title="刷新记录" data-i18n-title="refreshRecords"><span class="refresh-icon" aria-hidden="true">↻</span><span data-i18n="refresh">刷新</span></button>
+      </div>
     </div>
     <div id="alert" class="alert" role="status" hidden></div>
     <div class="workbench">
-      <aside class="timeline" aria-label="变动列表">
+      <aside class="timeline" aria-label="变动列表" data-i18n-aria="changes">
         <div class="timeline-top">
-          <div class="timeline-heading"><h2>变动记录</h2><span id="count" class="count" aria-label="当前分支范围内的记录数">0</span></div>
-          <label class="search"><span class="icon magnify" aria-hidden="true"></span><input id="search" type="search" aria-label="搜索文件或原因" placeholder="搜索文件或原因…"><kbd aria-hidden="true">/</kbd></label>
-          <label class="select-wrap"><span class="icon filter" aria-hidden="true"></span><select id="source" aria-label="按来源筛选">
-            <option value="">所有来源</option><option value="codex">Codex</option><option value="claude">Claude Code</option><option value="pi">Pi</option><option value="opencode">OpenCode</option><option value="gemini">Gemini CLI</option><option value="trae">TRAE</option><option value="trae-cli">TRAE CLI</option><option value="workspace">工作区</option><option value="mixed">来源不明</option>
+          <div class="timeline-heading"><h2 data-i18n="changes">变动记录</h2><span id="count" class="count" aria-label="当前分支范围内的记录数" data-i18n-aria="branchCount">0</span></div>
+          <div class="view-switch" role="group" aria-label="变动视图" data-i18n-aria="changeView">
+            <button type="button" id="view-current" class="button" data-i18n="currentChanges" aria-pressed="true">当前变动</button>
+            <button type="button" id="view-history" class="button" data-i18n="history" aria-pressed="false">历史记录</button>
+          </div>
+          <label class="search"><span class="icon magnify" aria-hidden="true"></span><input id="search" type="search" aria-label="搜索文件或原因" placeholder="搜索文件或原因…" data-i18n-aria="search" data-i18n-placeholder="searchPlaceholder"><kbd aria-hidden="true">/</kbd></label>
+          <label class="select-wrap"><span class="icon filter" aria-hidden="true"></span><select id="source" aria-label="按来源筛选" data-i18n-aria="filterSource">
+            <option value="" data-i18n="allSources">所有来源</option><option value="codex">Codex</option><option value="claude">Claude Code</option><option value="pi">Pi</option><option value="opencode">OpenCode</option><option value="gemini">Gemini CLI</option><option value="trae">TRAE</option><option value="trae-cli">TRAE CLI</option><option value="workspace" data-i18n="workspace">工作区</option><option value="mixed" data-i18n="mixed">来源不明</option>
           </select><span class="chevron" aria-hidden="true">⌄</span></label>
         </div>
         <div id="timeline-list" class="timeline-list"></div>
-        <button type="button" class="button more" id="more" hidden>加载更早记录</button>
+        <button type="button" class="button more" id="more" data-i18n="olderRecords" hidden>加载更早记录</button>
       </aside>
-      <section id="inspector" class="inspector" aria-label="变动详情">
-        <div id="placeholder" class="placeholder" role="status"><span class="empty-symbol" aria-hidden="true">⌘</span><h2 id="placeholder-title">正在加载变动记录</h2><p id="placeholder-text"></p></div>
+      <section id="inspector" class="inspector" aria-label="变动详情" data-i18n-aria="details">
+        <div id="placeholder" class="placeholder" role="status"><span class="empty-symbol" aria-hidden="true">⌘</span><h2 id="placeholder-title" data-i18n="loadingChanges">正在加载变动记录</h2><p id="placeholder-text"></p></div>
         <div id="detail" hidden>
           <div class="detail-top">
             <div class="detail-kicker"><span id="detail-source" class="source"></span><span id="detail-tool" class="tool"></span><time id="detail-time"></time></div>
@@ -48,16 +58,16 @@
             <div class="detail-metadata"><span class="detail-branch" id="detail-branch"></span><span id="detail-count"></span><span id="detail-stats"></span></div>
           </div>
           <section class="reason" aria-labelledby="reason-heading">
-            <div class="reason-heading"><h3 id="reason-heading"><span class="icon note" aria-hidden="true"></span> 修改原因</h3><span id="reason-origin" class="reason-origin"></span><button type="button" class="button subtle" id="edit-reason">编辑</button></div>
+            <div class="reason-heading"><h3 id="reason-heading"><span class="icon note" aria-hidden="true"></span><span data-i18n="reason">修改原因</span></h3><span id="reason-origin" class="reason-origin"></span><button type="button" class="button subtle" id="edit-reason">编辑</button></div>
             <p id="reason"></p>
-            <form id="reason-form" hidden><label for="reason-input" class="sr-only">修改原因</label><textarea id="reason-input" maxlength="1000" rows="3" placeholder="这次修改要解决什么问题？"></textarea><div class="form-actions"><span id="reason-error" role="alert"></span><button type="button" class="button" id="cancel-reason">取消</button><button type="submit" class="button primary">保存</button></div></form>
+            <form id="reason-form" hidden><label for="reason-input" class="sr-only" data-i18n="reason">修改原因</label><textarea id="reason-input" maxlength="1000" rows="3" placeholder="这次修改要解决什么问题？" data-i18n-placeholder="reasonInput"></textarea><div class="form-actions"><span id="reason-error" role="alert"></span><button type="button" class="button" id="cancel-reason" data-i18n="cancel">取消</button><button type="submit" class="button primary" data-i18n="save">保存</button></div></form>
           </section>
           <section aria-labelledby="files-heading" class="files-section">
-            <h3 id="files-heading">受影响的文件 <span id="file-count" class="count"></span></h3>
+            <h3 id="files-heading"><span data-i18n="affectedFiles">受影响的文件</span><span id="file-count" class="count"></span></h3>
             <div id="files" class="files"></div>
           </section>
-          <section class="diff" aria-label="逐行差异">
-            <div class="diff-toolbar"><span class="icon file" aria-hidden="true"></span><span id="diff-path"></span><label class="context-toggle"><input type="checkbox" id="context" checked> 显示上下文</label></div>
+          <section class="diff" aria-label="逐行差异" data-i18n-aria="lineDiff">
+            <div class="diff-toolbar"><span class="icon file" aria-hidden="true"></span><span id="diff-path"></span><label class="context-toggle"><input type="checkbox" id="context" checked><span data-i18n="showContext">显示上下文</span></label></div>
             <div id="diff-view" class="diff-view"></div>
           </section>
         </div>
@@ -66,34 +76,45 @@
     <footer id="root" class="page-footer"></footer>
     <dialog id="project-dialog" aria-labelledby="project-dialog-title">
       <form id="project-form">
-        <h2 id="project-dialog-title">添加工程</h2>
-        <label for="project-path">Git 工作树路径</label>
+        <h2 id="project-dialog-title" data-i18n="addProject">添加工程</h2>
+        <label for="project-path" data-i18n="worktreePath">Git 工作树路径</label>
         <input id="project-path" required maxlength="4096" placeholder="/Users/you/projects/repo" spellcheck="false" autocomplete="off">
-        <div class="form-actions"><span id="project-error" class="form-error" role="alert"></span><button type="button" class="button" id="cancel-project">取消</button><button class="button primary" type="submit">打开</button></div>
+        <div class="form-actions"><span id="project-error" class="form-error" role="alert"></span><button type="button" class="button" id="cancel-project" data-i18n="cancel">取消</button><button class="button primary" type="submit" data-i18n="open">打开</button></div>
       </form>
     </dialog>
     <dialog id="tracking-dialog" aria-labelledby="tracking-title">
       <form id="tracking-form">
-        <h2 id="tracking-title">监测设置</h2>
+        <h2 id="tracking-title" data-i18n="trackingSettings">监测设置</h2>
         <fieldset id="tracking-fields" disabled>
-          <label for="tracking-default">全局默认</label>
-          <select id="tracking-default"><option value="on">默认开启监测</option><option value="off">默认关闭监测</option></select>
+          <label for="tracking-default" data-i18n="globalDefault">全局默认</label>
+          <select id="tracking-default"><option value="on" data-i18n="defaultOn">默认开启监测</option><option value="off" data-i18n="defaultOff">默认关闭监测</option></select>
           <div id="tracking-project-field" hidden>
             <label for="tracking-project"><span id="tracking-project-label">当前工程</span></label>
-            <select id="tracking-project"><option value="inherit">跟随全局默认</option><option value="on">单独开启</option><option value="off">单独关闭</option></select>
+            <select id="tracking-project"><option value="inherit" data-i18n="inheritDefault">跟随全局默认</option><option value="on" data-i18n="projectOn">单独开启</option><option value="off" data-i18n="projectOff">单独关闭</option></select>
           </div>
-          <p class="setting-help">关闭后暂停记录和代理说明，已有记录仍可查看。</p>
+          <p class="setting-help" data-i18n="trackingHelp">关闭后暂停记录和代理说明，已有记录仍可查看。</p>
+          <p id="demo-tracking-help" class="setting-help" data-i18n="demoTrackingHelp" hidden>此设置仅影响演示工程。</p>
         </fieldset>
-        <div class="form-actions"><span id="tracking-error" class="form-error" role="alert"></span><button type="button" class="button" id="cancel-tracking">取消</button><button type="submit" class="button primary" id="save-tracking" disabled>保存</button></div>
+        <div class="form-actions"><span id="tracking-error" class="form-error" role="alert"></span><button type="button" class="button" id="cancel-tracking" data-i18n="cancel">取消</button><button type="submit" class="button primary" id="save-tracking" data-i18n="save" disabled>保存</button></div>
+      </form>
+    </dialog>
+    <dialog id="appearance-dialog" aria-labelledby="appearance-title">
+      <form method="dialog">
+        <h2 id="appearance-title" data-i18n="appearance">界面设置</h2>
+        <label for="interface-language" data-i18n="language">语言</label>
+        <select id="interface-language"><option value="zh-CN" lang="zh-CN">简体中文</option><option value="en" lang="en">English</option></select>
+        <label for="interface-theme" data-i18n="theme">主题</label>
+        <select id="interface-theme"><option value="light" data-i18n="light">亮色</option><option value="dark" data-i18n="dark">暗色</option><option value="auto" data-i18n="auto" selected>自动（跟随系统）</option></select>
+        <div class="form-actions"><button class="button primary" type="submit" data-i18n="done">完成</button></div>
       </form>
     </dialog>
     <dialog id="hunk-dialog" aria-labelledby="hunk-dialog-title">
       <form id="hunk-form">
-        <h2 id="hunk-dialog-title">编辑段落说明</h2>
+        <h2 id="hunk-dialog-title" data-i18n="editSection">编辑段落说明</h2>
         <p id="hunk-location" class="hunk-location"></p>
-        <label for="hunk-explanation" class="sr-only">段落说明</label>
-        <textarea id="hunk-explanation" maxlength="1000" rows="4" placeholder="这段修改解决了什么问题？"></textarea>
-        <div class="form-actions"><span id="hunk-error" class="form-error" role="alert"></span><button type="button" class="button" id="cancel-hunk">取消</button><button class="button primary" type="submit">保存</button></div>
+        <label for="hunk-explanation" class="sr-only" data-i18n="sectionExplanation">段落说明</label>
+        <textarea id="hunk-explanation" maxlength="1000" rows="4" placeholder="这段修改解决了什么问题？" data-i18n-placeholder="explanationPlaceholder"></textarea>
+        <div class="form-actions"><span id="hunk-error" class="form-error" role="alert"></span><button type="button" class="button" id="cancel-hunk" data-i18n="cancel">取消</button><button class="button primary" type="submit" data-i18n="save">保存</button></div>
       </form>
     </dialog>
   </main>
