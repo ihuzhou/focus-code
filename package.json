@@ -1,0 +1,20 @@
+{
+  "name": "focus-code",
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Local review timeline for coding agent changes",
+  "keywords": ["git", "diff", "coding-agent", "code-review"],
+  "files": ["src/", "integrations/", "web/"],
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org/"
+  },
+  "engines": { "node": ">=22.13" },
+  "bin": { "focus-code": "./src/cli.js" },
+  "scripts": {
+    "start": "node --disable-warning=ExperimentalWarning src/cli.js watch",
+    "demo": "node --disable-warning=ExperimentalWarning src/cli.js demo",
+    "test": "node --disable-warning=ExperimentalWarning --test"
+  },
+  "dependencies": { "diff": "^8.0.4" }
+}
