@@ -2,34 +2,36 @@
 
 **简体中文** · [English](./README.en.md)
 
-Focus Code 是一个 **coding agent 的代码变动审阅插件**。在浏览器里看 agent 改了哪些文件、每段代码怎么变了，以及它提交的修改原因。
+Focus Code 是一个 **coding agent 的代码变动审阅插件**。让 Claude Code、Codex 或 Pi 改完代码后，在一个本地网页里确认它动了哪些文件、具体改了哪几行、为什么改。
 
 ## 用 Claude Code 快速开始
 
-在终端安装 Focus Code 和 Claude Code 插件。
+1. 在终端安装 Focus Code，并接入 Claude Code。
 
-```sh
-npm install -g focus-code
-focus-code install claude --global
-```
+   ```sh
+   npm install -g focus-code
+   focus-code install claude --global
+   ```
 
-在要审阅的 Git 工程中启动新的 Claude Code 会话。让 Claude 完成一次代码修改，然后在 **Claude Code 的输入框**里运行这条命令。
+2. 在 Git 工程中新开 Claude Code 会话。让 Claude 完成一次修改，再在 **Claude Code 输入框**里打开当前工程的时间线。
 
-```text
-/focus-code show
-```
+   ```text
+   /focus-code show
+   ```
 
-浏览器会打开当前工程的变动时间线，你可以点开记录查看逐行 diff 和 Claude 提交的修改原因。
+也可以用 `focus-code show` 从普通终端打开网页，或用 `focus-code demo` 先体验示例。[接入其他 agent](#客户端集成)
 
-[其他客户端的安装方式](#客户端集成)也在下方。Pi 同样使用 `/focus-code show`，Codex 使用 `$focus-code show`。想先试用界面，可以在终端运行 `focus-code demo`。
+需要 Node.js 22.13+ 和 Git，支持 macOS 和 Linux。
 
-需要 Node.js 22.13+ 和 Git，支持 macOS 和 Linux。网页地址以终端输出为准。
+## 看一条实际改动
 
-## 审阅代码变动
+![Focus Code 的变动时间线。左侧显示 Codex、Claude Code 和 Pi 的修改记录，右侧显示选中文件的逐行 diff、整体修改原因和代码段说明。](./docs/focus-code-review.png)
 
-- 按时间查看 agent 的文件变动，切换工程、分支和来源，搜索文件路径与说明。
-- 查看实际逐行 diff，打开或收起上下文。
-- 查看 agent 提交的整体原因和逐段说明。没有逐段说明时，网页根据实际增删行生成差异摘要，也可以手动补写。
+示例中，Codex 让并发的令牌刷新调用共享同一个请求。选中这条记录，就能看到 `session.ts` 实际删掉和新增的代码，以及为什么要这样处理并发调用。
+
+- **定位改动**。按工程、分支或来源筛选，也可以搜索文件路径和说明。
+- **检查实现**。逐个文件审阅增删行，需要时展开上下文。
+- **弄清理由**。在 diff 旁查看整体原因和逐段说明，也可以自己补写。
 
 变动历史保存在本机。
 
@@ -45,6 +47,11 @@ focus-code show
 
 要登记新工程，可以在网页点「添加工程」并输入 Git 工作树的绝对路径。每个工作树独立保存历史。
 
+默认监测所有跟随全局设置的工程。点「监测设置」可以修改全局默认，也可以为当前工程单独开启或关闭。
+
+<details>
+<summary>监测设置、工程切换与筛选</summary>
+
 | 位置 | 可配置项 | 默认值与作用 |
 | --- | --- | --- |
 | 右上角 → 监测设置 → 全局默认 | 默认开启监测、默认关闭监测 | 默认开启。影响所有设为「跟随全局默认」的工程，包括之后发现的工程。 |
@@ -58,7 +65,12 @@ focus-code show
 
 关闭监测会暂停工作区扫描和代理原因提示。历史 diff 和说明仍可查看、搜索和手动编辑。重新开启后会以当前文件内容为新基线，随后继续记录。监测设置适用于当前机器上使用同一数据目录的网页服务和代理。请在实际记录页修改设置。
 
+</details>
+
 ## 命令行配置
+
+<details>
+<summary>启动参数、端口与安装范围</summary>
 
 | 命令 | 可用参数 | 行为 |
 | --- | --- | --- |
@@ -78,7 +90,12 @@ focus-code show --no-open
 
 不传 `--global` 和仓库路径时，Claude Code、OpenCode、Gemini CLI 和 TRAE 桌面端使用用户级安装。Codex、Pi 和 `all` 使用当前 Git 工作树。TRAE CLI 使用用户级插件安装。
 
+</details>
+
 ## 环境变量与数据目录
+
+<details>
+<summary>客户端路径、自定义数据目录与 SQLite 文件</summary>
 
 | 环境变量 | 用途 | 默认值与优先级 |
 | --- | --- | --- |
@@ -106,6 +123,8 @@ focus-code watch /path/to/repo --no-open
 | `tracking.sqlite` | 全局监测默认值和各工程的覆盖设置。 |
 | `<工作树路径哈希>/journal.sqlite` | 工程快照、diff、修改原因和代码段说明。 |
 | `integrations/trae-cli/` | TRAE CLI 使用的本地插件和市场清单。 |
+
+</details>
 
 ## 客户端集成
 
@@ -165,12 +184,17 @@ Claude Code、Codex、OpenCode、Gemini CLI、Pi、TRAE 桌面端和 TRAE CLI �
 
 ## 记录方式
 
+<details>
+<summary>快照、解释来源与记录范围</summary>
+
 - 网页服务监测当前打开的工程，以及本次服务运行中添加或切换到的其他工程。扫描间隔约为 1.5 秒，手动保存也可以被记录。首次扫描把当时的工作树作为基线，之后记录 Git 已跟踪文件和未被 Git 忽略的新文件的增删改及可执行位变化。
 - 代理可以用 `: # focus-reason: 这里写变动原因` 提交本次修改的整体原因。记录保存后，hook 会把代码段的定位发回代理。代理可逐段提交具体目的，例如 `: # focus-explain: {"change":42,"notes":[[0,0,"校验输入以防止空值进入缓存"]]}`。`notes` 的每一项包含文件序号、代码段序号和说明，两个序号都从 0 开始，由 hook 提供。
 - 逐段说明显示在对应的 diff 上方，来源为「代理说明」「手动填写」或「差异摘要」。摘要由实际增删内容生成，只描述改了什么。旧记录、手动改动和代理未提交原因的代码段也会显示摘要。点击「补写原因」即可记录该段的目的，手动填写优先于后续代理提交。
 - 同一会话的重叠工具调用合为一条记录。不同会话的工具调用重叠时，记录显示「来源不明」。在同一采样窗口内写入同一工作树的外部操作也可能被合并。未接入的工具或编辑器变动依靠工作区扫描。两次采样之间被覆盖或撤销的中间状态可能无法捕获。
 - Claude Code、OpenCode、Gemini CLI 和 TRAE 的内置文件编辑工具按目标文件所在的 Git 工作树归档。Shell 命令按 hook 工作目录或工具显式指定的工作目录采样。如果一条命令写入另一个工作树，需要让 Focus Code 另行监测那个工作树才能捕获该变动。
 - 二进制文件和大于 256 KiB 的文件在时间线中展示元数据。相关数据使用本机 SQLite 保存。
+
+</details>
 
 ## 源码开发
 

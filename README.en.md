@@ -2,34 +2,36 @@
 
 [简体中文](./README.md) · **English**
 
-Focus Code is a **code change review plugin for coding agents**. See which files your agent touched, exactly how each section changed, and the reasons it recorded, all in a local browser view.
+Focus Code is a **code change review plugin for coding agents**. After Claude Code, Codex, or Pi edits a project, open one local view to see which files changed, which lines were added or removed, and why the agent made the edit.
 
 ## Quick start with Claude Code
 
-Install Focus Code and its Claude Code integration in your terminal.
+1. Install Focus Code and its Claude Code integration from your terminal.
 
-```sh
-npm install -g focus-code
-focus-code install claude --global
-```
+   ```sh
+   npm install -g focus-code
+   focus-code install claude --global
+   ```
 
-Start a new Claude Code session in the Git project you want to review. After Claude makes an edit, enter this command **in Claude Code**.
+2. Start a new Claude Code session in a Git project. After Claude makes an edit, open the project's timeline **from Claude Code**.
 
-```text
-/focus-code show
-```
+   ```text
+   /focus-code show
+   ```
 
-Your browser opens the current project's timeline. Select an entry to review its line-by-line diff and the reason Claude recorded.
+You can also run `focus-code show` in a regular terminal, or use `focus-code demo` to try it with sample changes. [Set up another agent](#client-integrations)
 
-See [client integrations](#client-integrations) for other clients. Pi also uses `/focus-code show`, and Codex uses `$focus-code show`. To try the viewer with sample changes, run `focus-code demo` in your terminal.
+Requires Node.js 22.13+ and Git on macOS or Linux.
 
-Requires Node.js 22.13+ and Git on macOS or Linux. The terminal prints the browser address.
+## Review one change
 
-## Review code changes
+![The Focus Code timeline shows Codex, Claude Code, and Pi edits on the left. The selected file's diff, overall reason, and section explanation are visible on the right.](./docs/focus-code-review.png)
 
-- Follow agent edits in chronological order. Switch projects, branches, or sources, and search file paths and explanations.
-- Inspect the actual line-by-line diff and toggle its surrounding context.
-- Read the overall reason and the agent's explanation for each changed section. When a section has no explanation, Focus Code summarizes the added and removed lines. You can add your own note alongside the diff.
+In this example, Codex makes concurrent token refresh calls share one request. Open its timeline entry to see the exact changes in `session.ts` and the reason for sharing the request.
+
+- **Find the edit.** Narrow down the timeline by project, branch, or source, or search by path and explanation.
+- **Inspect the implementation.** Review added and removed lines file by file and reveal surrounding context when needed.
+- **Understand the reason.** Read the overall reason and section notes beside the diff, or add your own notes.
 
 Your change history is stored locally.
 
@@ -45,6 +47,11 @@ Run it in a Git project to select its worktree automatically. Run it from any ot
 
 To register a project in the browser, select **添加工程** (Add project) and enter the absolute path to its Git worktree. Each worktree has its own history.
 
+Tracking is on by default. In **监测设置** (Tracking settings), you can change the global default or override it for the current project.
+
+<details>
+<summary>Tracking settings, project selection, and filters</summary>
+
 | Control | Options | Default and behavior |
 | --- | --- | --- |
 | **监测设置** (Tracking settings) → **全局默认** (Global default) | On or off | On. Applies to every project that inherits the global default, including newly discovered projects. |
@@ -58,7 +65,12 @@ To register a project in the browser, select **添加工程** (Add project) and 
 
 Pausing tracking also pauses workspace scanning and agent prompts for explanations. Existing history remains available for browsing, searching, and manual edits. Resuming uses the current files as a new baseline and records subsequent edits. Settings apply to the viewer and agents using the same data directory. Use the live viewer to change them.
 
+</details>
+
 ## Command-line options
+
+<details>
+<summary>Startup flags, port selection, and installation scope</summary>
 
 | Command | Options | Behavior |
 | --- | --- | --- |
@@ -78,7 +90,12 @@ focus-code show --no-open
 
 With neither `--global` nor a repository path, Claude Code, OpenCode, Gemini CLI, and TRAE Desktop install for the current user. Codex, Pi, and `all` use the current Git worktree. TRAE CLI uses a user-level plugin installation.
 
+</details>
+
 ## Environment variables and data directory
+
+<details>
+<summary>Client paths, a custom data directory, and SQLite files</summary>
 
 | Variable | Used for | Default and precedence |
 | --- | --- | --- |
@@ -106,6 +123,8 @@ focus-code watch /path/to/repo --no-open
 | `tracking.sqlite` | Global tracking default and per-project overrides. |
 | `<worktree-path-hash>/journal.sqlite` | File snapshots, diffs, reasons, and section-level explanations. |
 | `integrations/trae-cli/` | Local plugin and marketplace files for TRAE CLI. |
+
+</details>
 
 ## Client integrations
 
@@ -153,12 +172,17 @@ To remove an integration, remove the Focus Code hook entries that invoke `src/cl
 
 ## How changes are recorded
 
+<details>
+<summary>Snapshots, explanations, and tracking coverage</summary>
+
 - The first scan captures a worktree baseline. Later scans record changes to Git-tracked and non-ignored files, including executable-bit changes. The viewer polls open worktrees about every 1.5 seconds, so it can record manual saves as well as agent edits.
 - The agent can submit a reason with `: # focus-reason: explain the goal of this edit`. After a captured edit, the hook gives the agent the changed section IDs. An agent can explain sections with `: # focus-explain: {"change":42,"notes":[[0,0,"Validate the input before it reaches the cache"]]}`. Each note contains the zero-based file index, zero-based section index, and explanation.
 - Each diff section shows an agent explanation, a manual entry, or a summary generated from its added and removed lines. A manual entry takes precedence over later agent submissions.
 - Overlapping tools in one session are grouped. Edits made by overlapping sessions are shown with an unknown source. Multiple changes inside a sampling interval can be grouped, and transient changes can be missed between samples.
 - Built-in file edits in Claude Code, OpenCode, Gemini CLI, and TRAE are recorded in the worktree containing the edited file. Shell commands are tracked from the hook's working directory or the tool's explicit working directory. A shell command writing to another worktree requires that worktree to be monitored separately to capture the edit.
 - Binary files and files larger than 256 KiB are recorded as metadata. Local SQLite databases hold the tracking state and history.
+
+</details>
 
 ## Development
 
