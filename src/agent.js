@@ -4,6 +4,7 @@ import { hasClaudeSkill, hasCodexSkill } from './install.js';
 import { Journal, journalPath } from './journal.js';
 import { registeredRoot, rememberProject } from './projects.js';
 import { repositoryRoot } from './repository.js';
+import { trackingEnabled } from './tracking.js';
 
 export const guidance = `Focus Code is tracking file changes in this repository. Before a logical edit, submit its user-facing rationale as a standalone shell command:
 : # focus-reason: <one sentence about the goal or tradeoff>
@@ -66,10 +67,11 @@ export function handleEvent(source, event) {
   const cwdRoot = repositoryRoot(event.cwd);
   if (kind === 'UserPromptSubmit') {
     const workspaceRoots = Array.isArray(event.workspace_roots) ? event.workspace_roots : [];
-    return cwdRoot || workspaceRoots.some(path => typeof path === 'string' && repositoryRoot(path)) ? context(kind, guidance) : undefined;
+    return trackingEnabled(cwdRoot) || workspaceRoots.some(path => typeof path === 'string' && trackingEnabled(repositoryRoot(path)))
+      ? context(kind, guidance) : undefined;
   }
   if (['Stop', 'SessionEnd', 'Interrupt'].includes(kind)) {
-    if (!cwdRoot || !existsSync(journalPath(cwdRoot))) return;
+    if (!cwdRoot || !existsSync(journalPath(cwdRoot)) || !trackingEnabled(cwdRoot)) return;
     const journal = new Journal(cwdRoot);
     try {
       if (journal.finishSession(source, session)) rememberProject(cwdRoot);
@@ -90,6 +92,7 @@ export function handleEvent(source, event) {
   if (!root) return;
   if (kind !== 'PreToolUse' && !existsSync(journalPath(root))) return;
   if (action && (action === 'reason' ? kind !== 'PreToolUse' || !value : kind !== 'PostToolUse')) return;
+  if (!trackingEnabled(root)) return;
   const journal = new Journal(root);
   try {
     if (action === 'reason') {

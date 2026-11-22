@@ -23,12 +23,17 @@ export async function createOpenCodePlugin({ directory, client }, node) {
     });
   }
 
-  const guidance = await observe('UserPromptSubmit', 'focus-code-plugin');
-  if (!guidance) return {};
   const sessions = new Map();
+  let previousGuidance;
   return {
-    'experimental.chat.system.transform': async (_input, output) => {
-      if (!output.system.includes(guidance)) output.system.push(guidance);
+    'experimental.chat.system.transform': async (input, output) => {
+      const guidance = await observe('UserPromptSubmit', input.sessionID ?? 'focus-code-plugin');
+      if (guidance) {
+        previousGuidance = guidance;
+        if (!output.system.includes(guidance)) output.system.push(guidance);
+      } else if (previousGuidance) {
+        output.system = output.system.filter(text => text !== previousGuidance);
+      }
     },
     'tool.execute.before': async (input, output) => {
       if (!observed.has(input.tool)) return;

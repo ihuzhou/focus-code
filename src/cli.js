@@ -9,8 +9,8 @@ import { showViewer } from './viewer.js';
 
 const usage = `Focus Code
 
-  focus-code watch [仓库路径] [--port 4317] [--no-open]
-  focus-code demo [--port 4317] [--no-open]
+  focus-code watch [仓库路径] [--port 端口] [--no-open]
+  focus-code demo [--port 端口] [--no-open]
   focus-code show [仓库路径] [--no-open]
   focus-code install <claude|opencode|gemini|trae> [--global | 仓库路径]
   focus-code install trae-cli [--global]
@@ -18,7 +18,8 @@ const usage = `Focus Code
   focus-code install all [仓库路径]
 
   Claude Code、OpenCode、Gemini CLI 和 TRAE 默认使用用户级设置。
-  watch 不指定路径时，优先打开当前 Git 工作树。`;
+  watch 不指定路径时，优先打开当前 Git 工作树。
+  默认尝试 4317、4318，随后使用系统提供的空闲端口。`;
 
 function requireRoot(path = process.cwd()) {
   const root = repositoryRoot(path);

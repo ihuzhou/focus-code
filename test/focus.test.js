@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { execFile, execFileSync } from 'node:child_process';
 import { existsSync, mkdtempSync, mkdirSync, readFileSync, readlinkSync, realpathSync, rmSync, statSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs';
+import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { test } from 'node:test';
@@ -9,6 +10,7 @@ import { install } from '../src/install.js';
 import { Journal } from '../src/journal.js';
 import { ProjectCatalog } from '../src/projects.js';
 import { serve } from '../src/server.js';
+import { TrackingSettings } from '../src/tracking.js';
 
 function fixture(t) {
   const dir = realpathSync(mkdtempSync(join(tmpdir(), 'focus-test-')));
@@ -406,6 +408,95 @@ test('show reuses the local viewer for the same state and opens the current proj
     assert.equal(projects.projects[0].root, root);
   } finally {
     await new Promise(resolve => server.close(resolve));
+  }
+});
+
+test('global and worktree switches gate hooks and polling and start a fresh baseline on resume', async t => {
+  const { dir, root, journal, write } = fixture(t);
+  const directory = join(dir, 'state');
+  const other = join(dir, 'another-repo');
+  execFileSync('git', ['init', '-q', '-b', 'main', other]);
+  journal.poll();
+  write('status.js', 'first\n');
+  journal.poll();
+  const initial = journal.detail(1);
+  const { server, address } = await serve(journal, { port: 0, open: false });
+  try {
+    const read = async path => fetch(new URL(path, address)).then(response => response.json());
+    const post = (path, body) => fetch(new URL(path, address), {
+      method: 'POST', body: JSON.stringify(body), headers: { 'Content-Type': 'application/json', Origin: address.origin },
+    });
+    const primary = (await read('/api/projects')).selected;
+    const settingsPath = `/api/tracking?project=${primary}`;
+    const settings = () => read(settingsPath);
+    const configure = async (path, body) => {
+      const response = await post(path, body);
+      assert.equal(response.status, 200);
+      return response.json();
+    };
+    const hook = (kind, cwd = root, tool, input) => execFileSync(process.execPath, ['--disable-warning=ExperimentalWarning', join(import.meta.dirname, '../src/cli.js'), 'hook', 'codex'], {
+      input: JSON.stringify({ cwd, hook_event_name: kind, session_id: 'tracked-session', tool_use_id: 'write', tool_name: tool, tool_input: input }),
+      env: { ...process.env, FOCUS_HOME: directory }, encoding: 'utf8',
+    });
+    assert.equal((await settings()).defaultEnabled, true);
+    assert.match(hook('UserPromptSubmit'), /focus-reason/);
+    journal.setReason('pi', 'pending', 'Old intent from before pause');
+    journal.startTool('pi', 'pending', 'write', 'write');
+    assert.equal((await configure(settingsPath, { mode: 'off' })).enabled, false);
+    assert.equal(hook('UserPromptSubmit'), '');
+    write('status.js', 'while disabled\n');
+    assert.equal(journal.poll(), null);
+    assert.equal(journal.endTool('pi', 'pending', 'write'), null);
+    assert.deepEqual(journal.detail(1), initial);
+    assert.equal((await configure(settingsPath, { mode: 'inherit' })).enabled, true);
+    write('status.js', 'after enabling\n');
+    journal.startTool('pi', 'pending', 'next', 'write');
+    write('status.js', 'agent edit after enabling\n');
+    journal.endTool('pi', 'pending', 'next');
+    assert.deepEqual(journal.patch(2, 0)[0].lines, ['-while disabled', '+after enabling']);
+    assert.equal(journal.detail(3).reason, null);
+
+    const added = await post('/api/projects', { path: other }).then(response => response.json());
+    const otherSettings = `/api/tracking?project=${added.selected}`;
+    assert.equal((await configure(otherSettings, { defaultEnabled: false, mode: 'on' })).enabled, true);
+    assert.equal((await settings()).enabled, false);
+    assert.match(hook('UserPromptSubmit', other), /focus-reason/);
+    assert.equal(hook('UserPromptSubmit'), '');
+    assert.equal((await read(`/api/changes?project=${primary}`)).tracking.enabled, false);
+    assert.equal((await post(settingsPath, { mode: 'invalid' })).status, 400);
+    const onDisk = new TrackingSettings(directory);
+    try { assert.equal(onDisk.get(other).mode, 'on'); }
+    finally { onDisk.close(); }
+  } finally {
+    await new Promise(resolve => server.close(resolve));
+  }
+});
+
+test('automatic viewer startup skips occupied default ports and reports an explicit conflict', async t => {
+  const { journal } = fixture(t);
+  const reserved = [];
+  try {
+    for (const port of [4317, 4318]) {
+      const server = createServer();
+      await new Promise((resolve, reject) => {
+        server.once('error', error => {
+          if (error.code === 'EADDRINUSE') resolve();
+          else reject(error);
+        });
+        server.listen(port, '127.0.0.1', () => { reserved.push(server); resolve(); });
+      });
+    }
+    await assert.rejects(serve(journal, { port: 4317, open: false }), /端口 4317 已被占用/);
+    const { server, address } = await serve(journal, { open: false });
+    try {
+      assert.ok(!['4317', '4318'].includes(address.port));
+      const status = await fetch(new URL('/api/status', address)).then(response => response.json());
+      assert.equal(status.app, 'focus-code');
+    } finally {
+      await new Promise(resolve => server.close(resolve));
+    }
+  } finally {
+    await Promise.all(reserved.map(server => new Promise(resolve => server.close(resolve))));
   }
 });
 

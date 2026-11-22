@@ -1,7 +1,8 @@
 import { createServer } from 'node:http';
 import { readFileSync } from 'node:fs';
 import { ProjectCatalog } from './projects.js';
-import { openBrowser, viewerIdentity } from './viewer.js';
+import { trackingModes } from './tracking.js';
+import { openBrowser, viewerIdentity, viewerPorts } from './viewer.js';
 
 const assets = new Map([
   ['/', ['index.html', 'text/html; charset=utf-8']],
@@ -26,7 +27,23 @@ async function readJson(request) {
   catch { return null; }
 }
 
-export async function serve(initial, { port = 4317, demo = false, open = true, directory, demoProjects = [] } = {}) {
+function listen(server, port) {
+  return new Promise((resolve, reject) => {
+    const failed = error => {
+      server.off('listening', ready);
+      reject(error);
+    };
+    const ready = () => {
+      server.off('error', failed);
+      resolve();
+    };
+    server.once('error', failed);
+    server.once('listening', ready);
+    server.listen(port, '127.0.0.1');
+  });
+}
+
+export async function serve(initial, { port, demo = false, open = true, directory, demoProjects = [] } = {}) {
   const catalog = new ProjectCatalog(initial, { demo, directory });
   for (const journal of demoProjects) catalog.register(journal.root, { journal, demo: true });
   catalog.poll(catalog.get());
@@ -62,6 +79,29 @@ export async function serve(initial, { port = 4317, demo = false, open = true, d
           return json(response, 201, { projects: catalog.list(), selected: added.id });
         }
       }
+      if (pathname === '/api/tracking') {
+        const id = searchParams.get('project');
+        const project = id ? catalog.get(id) : null;
+        if (id && !project) return json(response, 404, { error: '找不到这个工程。' });
+        if (method === 'GET') {
+          return json(response, 200, { ...catalog.tracking.get(project?.root), editable: !demo });
+        }
+        if (method === 'POST') {
+          if (demo) return json(response, 403, { error: '请在实际记录页修改监测设置。' });
+          const body = await readJson(request);
+          const { defaultEnabled, mode } = body ?? {};
+          const invalidDefault = defaultEnabled !== undefined && typeof defaultEnabled !== 'boolean';
+          const invalidOverride = mode !== undefined && (!project || !trackingModes.includes(mode));
+          if ((defaultEnabled === undefined && mode === undefined) || invalidDefault || invalidOverride) {
+            return json(response, 400, { error: '请选择有效的监测设置。' });
+          }
+          const settings = catalog.tracking.update({ defaultEnabled, mode, root: project?.root });
+          if (defaultEnabled !== undefined) {
+            for (const entry of catalog.projects.values()) catalog.poll(entry);
+          } else if (settings.enabled) catalog.poll(project);
+          return json(response, 200, { ...settings, editable: true });
+        }
+      }
       const project = catalog.get(searchParams.get('project'));
       if (!project) return json(response, 404, { error: '找不到这个工程。' });
       const { journal } = project;
@@ -70,7 +110,7 @@ export async function serve(initial, { port = 4317, demo = false, open = true, d
         return json(response, 200, { ...journal.list({
           branch: searchParams.get('branch'), source: searchParams.get('source'), search: searchParams.get('q')?.slice(0, 200),
           before: Number.isSafeInteger(before) && before > 0 ? before : undefined,
-        }), projects: catalog.list(), demo: project.demo, scanError: project.error });
+        }), projects: catalog.list(), demo: project.demo, scanError: project.error, tracking: journal.tracking.get(project.root) });
       }
       const match = /^\/api\/changes\/(\d+)(?:\/(reason|files\/(\d+)(?:\/hunks\/(\d+)\/explanation)?))?$/.exec(pathname);
       if (match) {
@@ -106,11 +146,17 @@ export async function serve(initial, { port = 4317, demo = false, open = true, d
       return json(response, 500, { error: '读取变动记录失败，请查看终端。' });
     }
   });
+  const candidates = port === undefined ? [...viewerPorts, 0] : [port];
   try {
-    await new Promise((resolve, reject) => {
-      server.once('error', reject);
-      server.listen(port, '127.0.0.1', resolve);
-    });
+    for (const candidate of candidates) {
+      try {
+        await listen(server, candidate);
+        break;
+      } catch (error) {
+        if (error.code !== 'EADDRINUSE' || candidate === 0) throw error;
+        if (port !== undefined) throw new Error(`端口 ${port} 已被占用。可以换一个 --port，或省略它由 Focus Code 选择可用端口。`);
+      }
+    }
   } catch (error) {
     catalog.close();
     throw error;

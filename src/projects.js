@@ -2,7 +2,8 @@ import { mkdirSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { basename, dirname, isAbsolute, join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
-import { Journal, stateDirectory } from './journal.js';
+import { Journal } from './journal.js';
+import { stateDirectory, TrackingSettings } from './tracking.js';
 import { hash, repositoryRoot } from './repository.js';
 
 const createCatalog = `
@@ -52,6 +53,7 @@ export class ProjectCatalog {
     this.directory = directory;
     this.projects = new Map();
     this.db = openCatalog(directory);
+    this.tracking = new TrackingSettings(directory);
     this.initial = initial ? this.register(initial.root, { journal: initial, demo }) : null;
   }
 
@@ -114,5 +116,6 @@ export class ProjectCatalog {
       if (project !== this.initial) project.journal.close();
     }
     this.db.close();
+    this.tracking.close();
   }
 }

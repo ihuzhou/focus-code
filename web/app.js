@@ -29,6 +29,9 @@ let projectsLoaded = false;
 let projectListKey;
 let projectsRequest = 0;
 let hunkTarget;
+let trackingTarget;
+let trackingInitial;
+let trackingRequest = 0;
 
 function projectRoute(path, id = project) {
   const url = new URL(path, location.origin);
@@ -68,7 +71,7 @@ function renderProjects(data, preferred = data.selected) {
 
 function renderEmptyProjects() {
   $('connection').textContent = '未选择工程';
-  $('signal').classList.remove('live');
+  $('signal').classList.remove('live', 'paused');
   $('alert').hidden = true;
   placeholder('还没有工程', '已接入的代理记录到修改后，工程会自动出现在列表，也可以手动添加。');
 }
@@ -245,8 +248,10 @@ function renderList() {
 
 function renderConnection(data, error) {
   const message = error ? '连接中断，正在重试。' : data.scanError ? '仓库扫描暂时失败，请检查运行 Focus Code 的终端。' : '';
-  $('connection').textContent = error ? '连接中断' : data.scanError ? '扫描异常' : '本地监测';
-  $('signal').classList.toggle('live', !message);
+  const paused = !error && data.tracking?.enabled === false;
+  $('connection').textContent = error ? '连接中断' : data.scanError ? '扫描异常' : paused ? '记录已暂停' : '本地监测';
+  $('signal').classList.toggle('live', !message && !paused);
+  $('signal').classList.toggle('paused', paused);
   $('alert').textContent = message;
   $('alert').hidden = !message;
   if (error) return;
@@ -290,7 +295,7 @@ async function refresh({ more = false } = {}) {
     const choice = changes.find(change => change.id === selected);
     const editing = !$('reason-form').hidden || $('hunk-dialog').open;
     if (!choice || (!more && following && !editing && selected !== changes[0]?.id)) {
-      selectChange(changes[0]?.id, { emptyRepo: data.stats.changes === 0 });
+      selectChange(changes[0]?.id, { emptyRepo: data.stats.changes === 0, paused: data.tracking?.enabled === false });
     } else if (!editing && (!detail || detail.reason !== choice.reason || detail.reason_origin !== choice.reason_origin || detail.notes_version !== choice.notes_version)) {
       void loadDetail(choice.id, file?.position);
     }
@@ -312,7 +317,7 @@ function placeholder(titleText, text) {
   $('detail').hidden = true;
 }
 
-function selectChange(id, { emptyRepo } = {}) {
+function selectChange(id, { emptyRepo, paused } = {}) {
   selected = id ?? 0;
   detail = null;
   file = null;
@@ -321,6 +326,8 @@ function selectChange(id, { emptyRepo } = {}) {
   if (selected) {
     placeholder('正在读取变动', '');
     void loadDetail(selected);
+  } else if (emptyRepo && paused) {
+    placeholder('记录已暂停', '可以在「监测设置」里重新开启这个工程。');
   } else if (emptyRepo && branch) {
     placeholder('这个分支还没有变动记录', '可以切换分支查看其他记录。');
   } else if (emptyRepo) {
@@ -510,6 +517,57 @@ function applyFilters() {
 }
 
 const jsonOptions = data => ({ method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data) });
+
+$('tracking-settings').addEventListener('click', async () => {
+  const request = ++trackingRequest;
+  trackingTarget = project;
+  trackingInitial = null;
+  $('tracking-fields').disabled = true;
+  $('save-tracking').disabled = true;
+  $('tracking-project-field').hidden = !project;
+  $('tracking-project-label').textContent = $('project').selectedOptions[0]?.textContent ?? '当前工程';
+  $('tracking-error').textContent = '';
+  $('tracking-dialog').showModal();
+  try {
+    const settings = await api(projectRoute('/api/tracking', trackingTarget));
+    if (!$('tracking-dialog').open || request !== trackingRequest) return;
+    trackingInitial = settings;
+    $('tracking-default').value = settings.defaultEnabled ? 'on' : 'off';
+    $('tracking-project').value = settings.mode;
+    $('tracking-fields').disabled = $('save-tracking').disabled = !settings.editable;
+    if (settings.editable) $('tracking-default').focus();
+    else $('tracking-error').textContent = '请在实际记录页修改监测设置。';
+  } catch (error) {
+    if (request === trackingRequest) $('tracking-error').textContent = error.message;
+  }
+});
+$('cancel-tracking').addEventListener('click', () => $('tracking-dialog').close());
+$('tracking-form').addEventListener('submit', async event => {
+  event.preventDefault();
+  if (!trackingInitial?.editable || $('save-tracking').disabled) return;
+  const target = trackingTarget;
+  const request = trackingRequest;
+  const defaultEnabled = $('tracking-default').value === 'on';
+  const mode = $('tracking-project').value;
+  const changes = {};
+  if (defaultEnabled !== trackingInitial.defaultEnabled) changes.defaultEnabled = defaultEnabled;
+  if (target && mode !== trackingInitial.mode) changes.mode = mode;
+  if (!Object.keys(changes).length) {
+    $('tracking-dialog').close();
+    return;
+  }
+  $('tracking-fields').disabled = $('save-tracking').disabled = true;
+  $('tracking-error').textContent = '';
+  try {
+    await api(projectRoute('/api/tracking', target), jsonOptions(changes));
+    if (request === trackingRequest) $('tracking-dialog').close();
+    await refresh();
+  } catch (error) {
+    if (request === trackingRequest) $('tracking-error').textContent = error.message;
+  } finally {
+    if (request === trackingRequest) $('tracking-fields').disabled = $('save-tracking').disabled = false;
+  }
+});
 
 $('project').addEventListener('change', event => switchProject(event.target.value));
 $('branch').addEventListener('change', event => switchBranch(event.target.value));

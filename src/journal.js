@@ -1,17 +1,16 @@
 import { randomUUID } from 'node:crypto';
 import { mkdirSync, realpathSync } from 'node:fs';
-import { homedir } from 'node:os';
-import { basename, dirname, join, resolve } from 'node:path';
+import { basename, dirname, join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { fileDiff, hash, repositoryBranch, repositoryBranches, scanFiles } from './repository.js';
+import { stateDirectory, TrackingSettings } from './tracking.js';
+
+export { stateDirectory } from './tracking.js';
 
 const maxToolAge = 10 * 60_000;
 const maxReasonAge = 20 * 60_000;
+const trackingChanged = Symbol('trackingChanged');
 const sources = new Set(['codex', 'claude', 'pi', 'opencode', 'gemini', 'trae', 'trae-cli', 'workspace', 'mixed']);
-
-export function stateDirectory() {
-  return resolve(process.env.FOCUS_HOME || join(process.env.XDG_STATE_HOME || join(homedir(), '.local', 'state'), 'focus-code'));
-}
 
 export function journalPath(root, directory = stateDirectory()) {
   return join(directory, hash(root), 'journal.sqlite');
@@ -61,10 +60,12 @@ export class Journal {
         PRIMARY KEY (source, session)
       );
     `);
+    this.tracking = new TrackingSettings(directory);
   }
 
   close() {
     this.db.close();
+    this.tracking.close();
   }
 
   transaction(action) {
@@ -75,6 +76,28 @@ export class Journal {
       return result;
     } catch (error) {
       this.db.exec('ROLLBACK');
+      throw error;
+    }
+  }
+
+  trackedTransaction(action) {
+    try {
+      return this.transaction(() => {
+        const before = this.tracking.get(this.root);
+        if (!before.enabled) return null;
+        if ((this.getMeta('trackingRevision') ?? 0) !== before.revision) {
+          this.db.exec('DELETE FROM inflight; DELETE FROM reasons;');
+          this.setMeta('batch', null);
+          this.setMeta('initialized', false);
+          this.setMeta('trackingRevision', before.revision);
+        }
+        const result = action();
+        const after = this.tracking.get(this.root);
+        if (!after.enabled || after.revision !== before.revision) throw trackingChanged;
+        return result;
+      });
+    } catch (error) {
+      if (error === trackingChanged) return null;
       throw error;
     }
   }
@@ -144,7 +167,8 @@ export class Journal {
   }
 
   poll(now = Date.now()) {
-    return this.transaction(() => {
+    if (!this.tracking.get(this.root).enabled) return null;
+    return this.trackedTransaction(() => {
       this.expireTools(now);
       if (this.hasActiveTools()) return null;
       const batch = this.getMeta('batch');
@@ -154,14 +178,14 @@ export class Journal {
   }
 
   setReason(source, session, reason, now = Date.now()) {
-    this.transaction(() => {
+    this.trackedTransaction(() => {
       this.db.prepare('DELETE FROM reasons WHERE time < ?').run(now - maxReasonAge);
       this.db.prepare('INSERT OR REPLACE INTO reasons VALUES (?, ?, ?, ?)').run(source, session, reason, now);
     });
   }
 
   startTool(source, session, callId, tool, now = Date.now()) {
-    return this.transaction(() => {
+    return this.trackedTransaction(() => {
       this.expireTools(now);
       // Gemini's tool hooks expose a tool name rather than a unique call ID.
       const key = source === 'gemini' && !callId ? `${tool}:${randomUUID()}` : callId;
@@ -185,7 +209,7 @@ export class Journal {
   }
 
   endTool(source, session, callId, now = Date.now(), tool) {
-    return this.transaction(() => {
+    return this.trackedTransaction(() => {
       let key = callId;
       if (source === 'gemini' && !key) {
         const prefix = `${tool}:`;
@@ -202,7 +226,7 @@ export class Journal {
   }
 
   finishSession(source, session, now = Date.now()) {
-    return this.transaction(() => {
+    return this.trackedTransaction(() => {
       const ended = this.db.prepare('DELETE FROM inflight WHERE source = ? AND session = ?').run(source, session).changes;
       this.clearReason(source, session);
       if (ended) this.markUnattributed();
@@ -289,6 +313,7 @@ export class Journal {
   }
 
   reviewHunks(id, source, session, offset = 0) {
+    if (!this.tracking.get(this.root).enabled) return null;
     const change = this.detail(id);
     if (change?.source !== source || change.session !== session) return null;
     const files = this.db.prepare('SELECT position, path, hunks FROM files WHERE change_id = ? ORDER BY position').iterate(id);
@@ -306,7 +331,7 @@ export class Journal {
   }
 
   saveHunkNotes(id, notes, actor = null) {
-    return this.transaction(() => {
+    const save = () => {
       if (actor) {
         const owner = this.db.prepare('SELECT source, session FROM changes WHERE id = ?').get(id);
         if (owner?.source !== actor.source || owner.session !== actor.session) return null;
@@ -329,7 +354,8 @@ export class Journal {
         saved += Number(write.run(id, position, index, explanation, explanation ? (actor ? 'agent' : 'user') : null, revision).changes);
       }
       return saved;
-    });
+    };
+    return actor ? this.trackedTransaction(save) : this.transaction(save);
   }
 
   editReason(id, reason) {

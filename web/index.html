@@ -24,7 +24,7 @@
   <main class="page">
     <div class="page-heading">
       <h1>变动时间线</h1>
-      <div class="heading-actions"><button type="button" id="add-project" class="button">＋ 添加工程</button><button type="button" id="refresh" class="button" title="刷新记录"><span class="refresh-icon" aria-hidden="true">↻</span> 刷新</button></div>
+      <div class="heading-actions"><button type="button" id="add-project" class="button">＋ 添加工程</button><button type="button" id="tracking-settings" class="button">监测设置</button><button type="button" id="refresh" class="button" title="刷新记录"><span class="refresh-icon" aria-hidden="true">↻</span> 刷新</button></div>
     </div>
     <div id="alert" class="alert" role="status" hidden></div>
     <div class="workbench">
@@ -70,6 +70,21 @@
         <label for="project-path">Git 工作树路径</label>
         <input id="project-path" required maxlength="4096" placeholder="/Users/you/projects/repo" spellcheck="false" autocomplete="off">
         <div class="form-actions"><span id="project-error" class="form-error" role="alert"></span><button type="button" class="button" id="cancel-project">取消</button><button class="button primary" type="submit">打开</button></div>
+      </form>
+    </dialog>
+    <dialog id="tracking-dialog" aria-labelledby="tracking-title">
+      <form id="tracking-form">
+        <h2 id="tracking-title">监测设置</h2>
+        <fieldset id="tracking-fields" disabled>
+          <label for="tracking-default">全局默认</label>
+          <select id="tracking-default"><option value="on">默认开启监测</option><option value="off">默认关闭监测</option></select>
+          <div id="tracking-project-field" hidden>
+            <label for="tracking-project"><span id="tracking-project-label">当前工程</span></label>
+            <select id="tracking-project"><option value="inherit">跟随全局默认</option><option value="on">单独开启</option><option value="off">单独关闭</option></select>
+          </div>
+          <p class="setting-help">关闭后暂停记录和代理说明，已有记录仍可查看。</p>
+        </fieldset>
+        <div class="form-actions"><span id="tracking-error" class="form-error" role="alert"></span><button type="button" class="button" id="cancel-tracking">取消</button><button type="submit" class="button primary" id="save-tracking" disabled>保存</button></div>
       </form>
     </dialog>
     <dialog id="hunk-dialog" aria-labelledby="hunk-dialog-title">

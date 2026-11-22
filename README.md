@@ -11,17 +11,75 @@ npm install -g focus-code
 focus-code demo
 ```
 
-会打开 `http://127.0.0.1:4317/`。演示包含两个临时 Git 工作树，可用顶部下拉框切换。按 `Ctrl+C` 结束服务。
+演示包含两个临时 Git 工作树，可用顶部下拉框切换。首次尝试打开 `http://127.0.0.1:4317/`，实际地址以终端输出为准。按 `Ctrl+C` 结束服务。
 
-## 接入自己的仓库
+## 网页与项目配置
 
-启动网页时可以指定要打开的 Git 工程。
+在 Git 工程里运行 `focus-code show`，或用 `focus-code show /path/to/repo` 打开指定工程。也可以运行 `focus-code watch`，再在网页点「添加工程」并输入 Git 工作树的绝对路径。网页的下拉框按 Git 工作树切换工程，每个工作树独立保存历史。
+
+| 位置 | 可配置项 | 默认值与作用 |
+| --- | --- | --- |
+| 右上角 → 监测设置 → 全局默认 | 默认开启监测、默认关闭监测 | 默认开启。影响所有设为「跟随全局默认」的工程，包括之后发现的工程。 |
+| 右上角 → 监测设置 → 当前工程 | 跟随全局默认、单独开启、单独关闭 | 默认跟随全局。单独开启和单独关闭优先于全局默认，按 Git 工作树根目录保存。 |
+| 顶部 → 工程、分支 | 选择工程、所有分支或单个分支 | 分支默认选「所有分支」。记录按写入时的分支筛选，本地分支和已有历史的分支都可选。 |
+| 时间线 → 来源和搜索 | 按客户端或工作区来源筛选，按文件路径、原因或说明搜索 | 默认所有来源，搜索为空。可以与分支筛选一起使用。 |
+| diff → 显示上下文 | 显示或隐藏代码段周围的上下文行 | 默认显示。 |
+
+- 想排除单个工程时，保持全局默认开启，选中该工程并设为「单独关闭」。
+- 想只监测指定工程时，把全局改为默认关闭，再添加或选中对应工程并设为「单独开启」。
+
+关闭监测会暂停工作区扫描和代理原因提示。历史 diff 和说明仍可查看、搜索和手动编辑。重新开启后会以当前文件内容为新基线，随后继续记录。监测设置适用于当前机器上使用同一数据目录的网页服务和代理。请在实际记录页修改设置。
+
+## 命令行配置
+
+| 命令 | 可用参数 | 行为 |
+| --- | --- | --- |
+| `focus-code watch [仓库路径]` | `--port <端口>`、`--no-open` | 持续监测并启动网页。路径省略时优先打开当前 Git 工作树，也可在网页选择已登记工程。 |
+| `focus-code demo` | `--port <端口>`、`--no-open` | 打开示例记录。 |
+| `focus-code show [仓库路径]` | `--no-open` | 打开当前或指定工程的时间线，复用同一数据目录的实际记录服务。服务尚未启动时会按需启动。 |
+| `focus-code install <客户端> --global` | `--global` | 为当前系统用户安装客户端集成。安装后重启客户端。 |
+| `focus-code install <客户端> <仓库路径>` | Git 工作树路径 | 只为指定 Git 工程安装集成。`all` 可一次安装所有支持按工程配置的客户端。 |
+
+`watch` 和 `demo` 默认依次尝试 `4317`、`4318`，再请系统分配一个空闲端口。`--port 0` 直接使用系统分配的空闲端口，`--port <1–65535>` 使用指定端口。指定端口被占用时可以换一个值，也可以省略参数让程序自动选择。实际地址以终端输出为准，网页服务监听 `127.0.0.1`。`--no-open` 适合只启动服务或打印链接。
 
 ```sh
-focus-code watch /path/to/repo
+focus-code watch /path/to/repo --port 4500
+focus-code watch --port 0 --no-open
+focus-code show /path/to/repo --no-open
 ```
 
-也可以直接运行 `focus-code watch`，点网页的「添加工程」并填 Git 工作树的绝对路径。打开多个工程后，用顶部下拉框切换。旁边的分支下拉框可选择「所有分支」、当前工程的本地分支，或有历史记录的分支。筛选以每条变动记录保存时的分支为准，包括当前未检出的分支。工程列表会保存在本机，每个工程独立保留历史。服务会扫描启动时打开的工程，以及本次运行中添加或切换到的工程。可用 `--port 4318` 指定端口，或用 `--no-open` 手动打开浏览器。
+不传 `--global` 和仓库路径时，Claude Code、OpenCode、Gemini CLI 和 TRAE 桌面端使用用户级安装。Codex、Pi 和 `all` 使用当前 Git 工作树。TRAE CLI 使用用户级插件安装。
+
+## 环境变量与数据目录
+
+| 环境变量 | 用途 | 默认值与优先级 |
+| --- | --- | --- |
+| `FOCUS_HOME` | 指定 Focus Code 的完整数据目录 | 优先于 `XDG_STATE_HOME`，未设置时使用下方默认路径。 |
+| `XDG_STATE_HOME` | 通过系统状态根目录设置 Focus Code 数据位置 | `FOCUS_HOME` 未设置时，使用 `$XDG_STATE_HOME/focus-code`。两者均未设置时使用 `~/.local/state/focus-code/`。 |
+| `CLAUDE_CONFIG_DIR` | Claude Code 的用户配置目录 | 默认 `~/.claude`。安装 `settings.json` 中的 hooks 和 `skills/focus-code/SKILL.md`。 |
+| `CODEX_HOME` | Codex 的用户配置目录 | 默认 `~/.codex`。全局 hooks 写入其中的 `hooks.json`。Codex 的打开记录技能位于 `~/.agents/skills/focus-code/`。 |
+| `PI_CODING_AGENT_DIR` | Pi 的用户配置目录 | 默认 `~/.pi/agent`。全局扩展写入 `extensions/focus-code.ts`。 |
+| `OPENCODE_CONFIG_DIR` | OpenCode 的用户配置目录 | 优先于 `XDG_CONFIG_HOME`。全局插件写入 `plugins/focus-code.js`。 |
+| `XDG_CONFIG_HOME` | OpenCode 的系统配置根目录 | `OPENCODE_CONFIG_DIR` 未设置时使用 `$XDG_CONFIG_HOME/opencode`。两者均未设置时使用 `~/.config/opencode`。 |
+| `GEMINI_CLI_HOME` | Gemini CLI 配置所用的用户主目录 | 默认 `~`，全局配置写入其下的 `.gemini/settings.json`。 |
+| `TRAECLI_BIN` | 指定 TRAE CLI 的可执行文件路径或命令名 | 默认在 `PATH` 依次查找 `traex`、`traecli`、`trae-cli`。 |
+| `TRAE_PROJECT_DIR` | TRAE 提供的工程目录 | 由客户端传给 hook，在 hook 缺少工作目录时作为回退。 |
+
+网页服务、客户端进程和 hooks 需要看到同一份 `FOCUS_HOME` 或 `XDG_STATE_HOME` 设置。切换数据目录会打开该目录自己的工程列表和历史。
+
+```sh
+export FOCUS_HOME="$HOME/.local/state/focus-code-work"
+focus-code watch /path/to/repo --no-open
+```
+
+| 数据目录中的文件 | 内容 |
+| --- | --- |
+| `projects.sqlite` | 已发现的工程和本地网页服务的位置。 |
+| `tracking.sqlite` | 全局监测默认值和各工程的覆盖设置。 |
+| `<工作树路径哈希>/journal.sqlite` | 工程快照、diff、修改原因和代码段说明。 |
+| `integrations/trae-cli/` | TRAE CLI 使用的本地插件和市场清单。 |
+
+## 客户端集成
 
 ### 全局安装
 
@@ -37,7 +95,7 @@ Claude Code、Codex、OpenCode、Gemini CLI、Pi、TRAE 桌面端和 TRAE CLI �
 | TRAE 桌面端 | `focus-code install trae --global` | `~/.trae/hooks.json`，已存在 `~/.trae-cn` 时也会写入该目录的 `hooks.json` |
 | TRAE CLI | `focus-code install trae-cli --global` | 通过 `traex`、`traecli` 或 `trae-cli` 的插件命令安装 `focus-code@focus-code-local` |
 
-安装器识别 `CLAUDE_CONFIG_DIR`、`CODEX_HOME`、`OPENCODE_CONFIG_DIR`、`XDG_CONFIG_HOME`、`GEMINI_CLI_HOME` 和 `PI_CODING_AGENT_DIR`。在本地 Git 工作树中使用任一已接入的客户端，首次捕获到修改时，该工程会自动出现在 Focus Code 的顶部列表。网页关闭期间，插件也会把变动和代理提交的原因写入本机历史。运行 `focus-code watch` 即可查看。使用 Claude Code 或 Gemini CLI 打开新工程时，按客户端提示信任该工程。
+在本地 Git 工作树中使用任一已接入的客户端，首次捕获到修改时，该工程会自动出现在网页顶部列表。网页关闭期间，插件也会把变动和代理提交的原因写入本机历史。使用 Claude Code 或 Gemini CLI 打开新工程时，按客户端提示信任该工程。
 
 #### 在客户端里打开记录页
 
@@ -71,17 +129,20 @@ Claude Code、Codex、OpenCode、Gemini CLI、Pi、TRAE 桌面端和 TRAE CLI �
 
 `focus-code install all /path/to/repo` 会为同一个工作树安装表里的全部集成。
 
-安装器将 hook 合并到已有的 JSON 设置中。生成的配置引用本机 Focus Code 和 Node 的绝对路径。移动 Focus Code 后，重新安装并清理旧路径的 hook 条目。卸载时，在相应设置文件的 `hooks` 中删除调用 `src/cli.js hook` 的 Focus Code 条目，或删除生成的 Pi 或 OpenCode 扩展入口。
+### 升级与卸载
+
+已经通过 npm 全局安装的用户可以运行 `npm install -g focus-code@latest` 升级。重新启动网页服务和客户端以加载新代码。安装器会合并已有 JSON 设置，也可在同一位置重复运行。安装目录或 Node 路径迁移后，重新运行对应安装命令并清理指向旧路径的 Focus Code hook 条目。
+
+卸载客户端集成时，可以在相应 JSON 文件的 `hooks` 中删除调用 `src/cli.js hook` 的 Focus Code 条目，并移除生成的 Claude Code 或 Codex `focus-code` 技能目录。Pi 和 OpenCode 可移除生成的扩展入口。TRAE CLI 可通过自己的插件管理命令卸载。随后可运行 `npm uninstall -g focus-code` 移除命令行包，历史仍保存在数据目录。
 
 ## 记录方式
 
-- 第一次扫描把当前工作树作为基线。之后按快照差记录新增、修改、删除和可执行位变化，含 Git 已跟踪文件和非忽略的未跟踪文件。服务运行期间约每 1.5 秒扫描一次，也能记录手动保存。Agent hooks 可以在 GUI 关闭时持续记录工具边界上的变化。
+- 网页服务监测当前打开的工程，以及本次服务运行中添加或切换到的其他工程。扫描间隔约为 1.5 秒，手动保存也可以被记录。首次扫描把当时的工作树作为基线，之后记录 Git 已跟踪文件和未被 Git 忽略的新文件的增删改及可执行位变化。
 - 代理可以用 `: # focus-reason: 这里写变动原因` 提交本次修改的整体原因。记录保存后，hook 会把代码段的定位发回代理。代理可逐段提交具体目的，例如 `: # focus-explain: {"change":42,"notes":[[0,0,"校验输入以防止空值进入缓存"]]}`。`notes` 的每一项包含文件序号、代码段序号和说明，两个序号都从 0 开始，由 hook 提供。
 - 逐段说明显示在对应的 diff 上方，来源为「代理说明」「手动填写」或「差异摘要」。摘要由实际增删内容生成，只描述改了什么。旧记录、手动改动和代理未提交原因的代码段也会显示摘要。点击「补写原因」即可记录该段的目的，手动填写优先于后续代理提交。
 - 同一会话的重叠工具调用合为一条记录。不同会话的工具调用重叠时，记录显示「来源不明」。在同一采样窗口内写入同一工作树的外部操作也可能被合并。未接入的工具或编辑器变动依靠工作区扫描。两次采样之间被覆盖或撤销的中间状态可能无法捕获。
 - Claude Code、OpenCode、Gemini CLI 和 TRAE 的内置文件编辑工具按目标文件所在的 Git 工作树归档。Shell 命令按 hook 工作目录或工具显式指定的工作目录采样。如果一条命令写入另一个工作树，需要让 Focus Code 另行监测那个工作树才能捕获该变动。
-- 二进制文件和大于 256 KiB 的文件在时间线中展示元数据。每个 Git worktree 有独立记录。
-- 快照、diff 和原因保存于 `~/.local/state/focus-code/`，可用 `XDG_STATE_HOME` 或 `FOCUS_HOME` 改位置。更改路径时，GUI 和代理会话需要使用相同的环境变量。变动历史保存在本机 SQLite 中，GUI 只监听 `127.0.0.1`。
+- 二进制文件和大于 256 KiB 的文件在时间线中展示元数据。相关数据使用本机 SQLite 保存。
 
 ## 源码开发
 

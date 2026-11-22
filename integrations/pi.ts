@@ -1,7 +1,6 @@
 import { fileURLToPath } from 'node:url';
 import type { ExtensionAPI, ExtensionContext } from '@earendil-works/pi-coding-agent';
-import { guidance, handleEvent } from '../src/agent.js';
-import { repositoryRoot } from '../src/repository.js';
+import { handleEvent } from '../src/agent.js';
 
 const cli = fileURLToPath(new URL('../src/cli.js', import.meta.url));
 
@@ -41,9 +40,10 @@ export default function (pi: ExtensionAPI) {
     },
   });
 
-  pi.on('session_start', (_event, ctx) => { observe('UserPromptSubmit', ctx); });
   pi.on('before_agent_start', (event, ctx) => {
-    if (repositoryRoot(ctx.cwd)) event.systemPromptOptions.sections.focus_code = guidance;
+    const text = observe('UserPromptSubmit', ctx)?.hookSpecificOutput?.additionalContext;
+    if (text) event.systemPromptOptions.sections.focus_code = text;
+    else delete event.systemPromptOptions.sections.focus_code;
   });
   pi.on('tool_call', (event, ctx) => {
     if (!observed.has(event.toolName)) return;

@@ -2,12 +2,12 @@ import { spawn } from 'node:child_process';
 import { mkdirSync, realpathSync } from 'node:fs';
 import { setTimeout as pause } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
-import { stateDirectory } from './journal.js';
 import { rememberedViewer, rememberProject } from './projects.js';
 import { hash, repositoryRoot } from './repository.js';
+import { stateDirectory } from './tracking.js';
 
 const cli = fileURLToPath(new URL('./cli.js', import.meta.url));
-const viewerPorts = [4317, 4318];
+export const viewerPorts = [4317, 4318];
 
 export function viewerIdentity(directory) {
   return hash(realpathSync(directory));
@@ -39,27 +39,22 @@ async function findViewer(directory, identity) {
 }
 
 async function startViewer(directory, identity) {
-  for (const port of [...viewerPorts, 0]) {
-    const child = spawn(process.execPath, ['--disable-warning=ExperimentalWarning', cli, 'watch', '--no-open', '--port', String(port)], {
-      stdio: 'ignore', detached: true,
-    });
-    let stopped = false;
-    child.once('exit', () => { stopped = true; });
-    child.once('error', () => { stopped = true; });
-    child.unref();
-    const deadline = Date.now() + 8000;
-    do {
-      const address = await findViewer(directory, identity);
-      if (address) return address;
-      if (stopped) break;
-      await pause(100);
-    } while (Date.now() < deadline);
-    if (!stopped) {
-      child.kill();
-      throw new Error('Focus Code 网页启动超时，请运行 focus-code watch 后再试。');
-    }
-  }
-  throw new Error('无法启动 Focus Code 网页，请运行 focus-code watch 查看错误。');
+  const child = spawn(process.execPath, ['--disable-warning=ExperimentalWarning', cli, 'watch', '--no-open'], {
+    stdio: 'ignore', detached: true,
+  });
+  let stopped = false;
+  child.once('exit', () => { stopped = true; });
+  child.once('error', () => { stopped = true; });
+  child.unref();
+  const deadline = Date.now() + 8000;
+  do {
+    const address = await findViewer(directory, identity);
+    if (address) return address;
+    if (stopped) throw new Error('无法启动 Focus Code 网页，请运行 focus-code watch 查看错误。');
+    await pause(100);
+  } while (Date.now() < deadline);
+  child.kill();
+  throw new Error('Focus Code 网页启动超时，请运行 focus-code watch 后再试。');
 }
 
 export async function showViewer(cwd = process.cwd(), { open = true } = {}) {

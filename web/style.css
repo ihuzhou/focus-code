@@ -167,6 +167,9 @@ dialog label, dialog .hunk-location { display: block; color: var(--muted); font-
 dialog input, dialog textarea { width: 100%; border: 1px solid #d8ccf4; border-radius: 6px; padding: 8px 9px; margin: 7px 0 4px; }
 dialog textarea { resize: vertical; }
 .form-error { margin-right: auto; align-self: center; color: #a13647; font-size: 12px; }
+#tracking-fields { border: 0; margin: 0; padding: 0; min-width: 0; }
+#tracking-fields select { width: 100%; margin: 6px 0 14px; padding: 8px 10px; color: var(--ink); background-color: var(--paper); border: 1px solid var(--line); border-radius: 6px; }
+.setting-help { color: var(--muted); font-size: 12px; }
 @media (max-width: 820px) {
   .page { padding-top: 29px; }
   .workbench { grid-template-columns: minmax(205px, 30%) minmax(0, 1fr); gap: 12px; }
@@ -179,8 +182,9 @@ dialog textarea { resize: vertical; }
   .header-repo select { font-size: 12px; max-width: 92px; }
   .header-repo #branch { max-width: 130px; }
   .workbench { grid-template-columns: minmax(0, 1fr); }
-  .page-heading { gap: 10px; }
-  .heading-actions { gap: 4px; }
+  .page-heading { gap: 10px; flex-wrap: wrap; }
+  .heading-actions { gap: 4px; flex-wrap: wrap; }
+  .connection:has(.paused) #connection { display: inline; font-size: 11px; }
   .heading-actions .button { padding-inline: 7px; }
   .timeline-list { max-height: 240px; }
   .detail-kicker time { font-size: 10px; }
