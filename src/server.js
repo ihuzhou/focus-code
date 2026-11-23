@@ -9,6 +9,7 @@ import { openBrowser, viewerIdentity, viewerPorts } from './viewer.js';
 const assets = new Map([
   ['/', ['index.html', 'text/html; charset=utf-8']],
   ['/app.js', ['app.js', 'text/javascript; charset=utf-8']],
+  ['/review-state.js', ['review-state.js', 'text/javascript; charset=utf-8']],
   ['/time-range.js', ['time-range.js', 'text/javascript; charset=utf-8']],
   ['/logo.svg', ['logo.svg', 'image/svg+xml']],
   ['/diff-summary.js', ['diff-summary.js', 'text/javascript; charset=utf-8']],

@@ -63,6 +63,8 @@ Tracking is on by default. In **监测设置** (Tracking settings), you can chan
 | Timeline date, source, and search | Filter by date, client, file path, reason, or explanation. | All dates and sources by default. Dates use the browser’s local time. Custom ranges include both dates; the last two days are yesterday and today. |
 | Diff context | Show or hide unchanged lines around a changed section | Shown by default. |
 
+Unreviewed cards have a dot. A card is dimmed after you open it and its diff loads. Review status is saved per browser and worktree; a new revision of an uncommitted diff is unreviewed.
+
 - To exclude one project, keep tracking on globally and set that project to always off.
 - To track only selected projects, turn tracking off globally and set each chosen project to always on.
 

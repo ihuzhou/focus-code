@@ -13,6 +13,7 @@ import { UntrackedPaths } from '../src/repository.js';
 import { serve } from '../src/server.js';
 import { TrackingSettings } from '../src/tracking.js';
 import { addDiffSummaries, describeHunk } from '../web/diff-summary.js';
+import { ReviewState, sameReviewVersion } from '../web/review-state.js';
 import { timeBounds } from '../web/time-range.js';
 
 function fixture(t) {
@@ -707,6 +708,35 @@ test('one timeline shows live edits once, hides rollbacks, and keeps only commit
   } finally {
     await new Promise(resolve => server.close(resolve));
   }
+});
+
+test('review marks are worktree-specific and only apply to the reviewed diff revision', () => {
+  const storage = new Map();
+  const state = () => new ReviewState(key => storage.get(key) ?? null, (key, value) => storage.set(key, value));
+  const first = state();
+  const change = { id: 'file', branch: 'main', uncommitted: true, diff_revision: 'v1' };
+  const revised = { ...change, diff_revision: 'v2' };
+  const otherBranch = { ...change, branch: 'topic' };
+  const history = { id: 1, branch: 'main', time: 2000 };
+  assert.equal(first.has('worktree-a', change), false);
+  assert.equal(first.mark('worktree-a', change), true);
+  assert.equal(first.mark('worktree-a', change), false);
+  assert.equal(first.mark('worktree-a', history), true);
+
+  const reloaded = state();
+  assert.equal(reloaded.has('worktree-a', { ...change, reason: 'Updated explanation' }), true);
+  assert.equal(reloaded.has('worktree-b', change), false);
+  assert.equal(reloaded.has('worktree-a', otherBranch), false);
+  assert.equal(reloaded.has('worktree-a', revised), false);
+  assert.equal(reloaded.has('worktree-a', history), true);
+  assert.equal(reloaded.has('worktree-a', { ...history, time: 4000 }), false);
+  assert.equal(sameReviewVersion(change, revised), false);
+  assert.equal(sameReviewVersion(change, otherBranch), false);
+  assert.equal(sameReviewVersion(change, { ...change }), true);
+  first.mark('worktree-a', revised);
+  reloaded.invalidate();
+  assert.equal(reloaded.has('worktree-a', revised), true);
+  assert.equal(reloaded.has('worktree-a', change), false);
 });
 
 test('date presets and custom ranges use local midnights and include the end day', () => {

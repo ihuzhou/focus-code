@@ -32,6 +32,8 @@ const messages = {
   refresh: ['刷新', 'Refresh'],
   refreshRecords: ['刷新记录', 'Refresh records'],
   changes: ['变动记录', 'Changes'],
+  reviewed: ['已查看', 'Reviewed'],
+  notReviewed: ['未查看', 'Not reviewed'],
   uncommittedChange: ['未提交改动', 'Uncommitted change'],
   branchCount: ['符合当前筛选的记录数', 'Number of records matching the current filters'],
   search: ['搜索文件或原因', 'Search files or reasons'],

@@ -1,4 +1,5 @@
 import { describeHunk } from './diff-summary.js';
+import { ReviewState, sameReviewVersion } from './review-state.js';
 import { translate } from './i18n.js';
 import { timeBounds } from './time-range.js';
 
@@ -17,6 +18,9 @@ let detail;
 let file;
 let hunks;
 let patchMessage;
+let reviewTarget;
+let displayedDiff;
+const reviewedChanges = new ReviewState(readPreference, savePreference);
 const changeApi = id => `${typeof id === 'string' ? '/api/current' : '/api/changes'}/${id}`;
 let historyLimit = 40;
 let view = 0;
@@ -85,10 +89,8 @@ function updateProjectOptions(projects, preferred) {
   if (key === projectListKey && picker.value === preferred) return;
   if (key !== projectListKey) {
     projectListKey = key;
-    const counts = new Map();
-    for (const item of projects) counts.set(item.name, (counts.get(item.name) ?? 0) + 1);
     picker.replaceChildren(...projects.map(item => {
-      const label = item.demo ? t('demoProject', item.name) : counts.get(item.name) > 1 ? item.root : item.name;
+      const label = item.demo ? t('demoProject', item.name) : item.root;
       const option = element('option', '', label);
       option.value = item.id;
       option.title = item.root ?? '';
@@ -147,6 +149,7 @@ function resetTimeline() {
   fileRequest++;
   selected = 0;
   detail = file = hunks = null;
+  reviewTarget = displayedDiff = null;
   changes = [];
   following = true;
   historyLimit = 40;
@@ -248,8 +251,15 @@ function dayLabel(time) {
   return date.getFullYear() === today.getFullYear() ? dates.day.format(date) : date.toLocaleDateString(language);
 }
 
+function completeReview(change) {
+  if (!sameReviewVersion(reviewTarget, change)) return;
+  reviewTarget = null;
+  if (reviewedChanges.mark(project, change)) renderList();
+}
+
 function renderList() {
-  const key = JSON.stringify([language, selected, changes]);
+  const reviewStates = changes.map(change => reviewedChanges.has(project, change));
+  const key = JSON.stringify([language, selected, changes, reviewStates]);
   if (key === listKey) return;
   listKey = key;
   const list = $('timeline-list');
@@ -258,13 +268,14 @@ function renderList() {
   const content = document.createDocumentFragment();
   let day;
   let restoreFocus;
-  for (const change of changes) {
+  for (const [index, change] of changes.entries()) {
+    const reviewed = reviewStates[index];
     const date = new Date(change.time).toDateString();
     if (day !== date) {
       day = date;
       content.append(element('h3', 'day', dayLabel(change.time)));
     }
-    const button = element('button', 'event');
+    const button = element('button', `event ${reviewed ? 'is-reviewed' : 'is-unreviewed'}`);
     button.type = 'button';
     button.dataset.id = change.id;
     button.setAttribute('aria-current', String(change.id === selected));
@@ -280,15 +291,25 @@ function renderList() {
       tag.setAttribute('aria-label', t('uncommittedChange'));
       badges.append(tag);
     }
-    line.append(badges, time);
+    const eventTime = element('span', 'event-time');
+    if (!reviewed) {
+      const dot = element('span', 'unreviewed-dot');
+      dot.setAttribute('aria-hidden', 'true');
+      dot.title = t('notReviewed');
+      eventTime.append(dot);
+    }
+    eventTime.append(time);
+    line.append(badges, eventTime);
     const name = element('span', 'event-title', title(change));
     name.title = title(change);
     const foot = element('span', 'event-foot');
     foot.append(t('filesCount', change.file_count), stats(change));
-    button.append(line, name, foot);
+    button.append(line, name, foot, element('span', 'sr-only', t(reviewed ? 'reviewed' : 'notReviewed')));
     button.addEventListener('click', () => {
       following = false;
+      reviewTarget = change;
       if (change.id !== selected) selectChange(change.id);
+      else completeReview(displayedDiff);
     });
     if (button.dataset.id === focused) restoreFocus = button;
     content.append(button);
@@ -372,6 +393,8 @@ function placeholder(titleText, text) {
 
 function selectChange(id, { emptyRepo, paused } = {}) {
   selected = id ?? 0;
+  if (reviewTarget?.id !== selected) reviewTarget = null;
+  displayedDiff = null;
   detail = null;
   file = null;
   $('reason-form').hidden = true;
@@ -459,7 +482,10 @@ function renderFiles() {
     const code = element('span', `file-status ${item.status}`, codes[item.status]);
     code.setAttribute('aria-label', t(item.status));
     button.append(code, element('span', 'file-name', item.path), stats(item));
-    button.addEventListener('click', () => void selectFile(item));
+    button.addEventListener('click', () => {
+      reviewTarget = detail;
+      void selectFile(item);
+    });
     if (focused && item.position === file.position) focus = button;
     return button;
   });
@@ -469,7 +495,9 @@ function renderFiles() {
 
 async function selectFile(item, { keepScroll = false } = {}) {
   const request = ++fileRequest;
-  const id = detail.id;
+  const change = detail;
+  const { id } = change;
+  displayedDiff = null;
   file = item;
   renderFiles();
   $('diff-path').textContent = item.path;
@@ -484,6 +512,7 @@ async function selectFile(item, { keepScroll = false } = {}) {
     const data = await api(projectRoute(`${changeApi(id)}/files/${item.position}`));
     if (selected !== id || request !== fileRequest) return;
     hunks = data;
+    displayedDiff = change;
     patchMessage = fileLimitation(item.limitation) || (item.old_mode && item.new_mode && item.old_mode !== item.new_mode
       ? t('modeChanged', item.old_mode, item.new_mode) : t('noDiff'));
   } catch (error) {
@@ -491,6 +520,7 @@ async function selectFile(item, { keepScroll = false } = {}) {
     patchMessage = error.message;
   }
   renderDiff();
+  completeReview(displayedDiff);
 }
 
 function hunkNote(hunk, index) {
@@ -765,6 +795,11 @@ $('reason-form').addEventListener('submit', async event => {
   } finally {
     if (submit) submit.disabled = false;
   }
+});
+window.addEventListener('storage', event => {
+  if (event.key !== null && !event.key.startsWith('focus-code-reviewed:')) return;
+  reviewedChanges.invalidate();
+  renderList();
 });
 window.addEventListener('keydown', event => {
   const dropdown = document.querySelector('.dropdown[open]');

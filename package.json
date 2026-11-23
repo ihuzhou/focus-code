@@ -1,6 +1,6 @@
 {
   "name": "focus-code",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "type": "module",
   "description": "A local code change review plugin for coding agents",
   "repository": {
@@ -27,7 +27,7 @@
     "node": ">=22.13"
   },
   "bin": {
-    "focus-code": "./src/cli.js"
+    "focus-code": "src/cli.js"
   },
   "scripts": {
     "start": "node --disable-warning=ExperimentalWarning src/cli.js watch",
