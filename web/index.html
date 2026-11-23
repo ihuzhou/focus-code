@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="light dark">
-  <link rel="icon" href="data:,">
+  <link rel="icon" href="/logo.svg" type="image/svg+xml">
   <title>Focus Code · 变动时间线</title>
   <script src="/theme.js"></script>
   <link rel="stylesheet" href="/style.css">
@@ -12,7 +12,7 @@
 <body>
   <header class="topbar">
     <div class="top-inner">
-      <a class="wordmark" href="/" aria-label="Focus Code 首页" data-i18n-aria="home"><span class="mark" aria-hidden="true"><i></i><i></i><i></i><i></i><b></b></span>Focus<span class="wordmark-code">Code</span></a>
+      <a class="wordmark" href="/" aria-label="Focus Code 首页" data-i18n-aria="home"><img class="mark" src="/logo.svg" width="38" height="38" alt="">Focus<span class="wordmark-code">Code</span></a>
       <div class="header-repo">
         <span class="icon folder" aria-hidden="true"></span>
         <select id="project" aria-label="切换工程" data-i18n-aria="switchProject"><option value="" data-i18n="loadingProject">加载工程…</option></select>
@@ -21,18 +21,35 @@
       </div>
       <div class="header-actions">
         <div class="connection"><span id="demo" class="demo" data-i18n="demo" hidden>演示数据</span><span id="signal" class="signal" aria-hidden="true"></span><span id="connection" data-i18n="connecting">连接中</span></div>
-        <button type="button" id="language-settings" class="button" data-i18n="language" aria-haspopup="dialog" aria-controls="language-dialog">语言</button>
-        <button type="button" id="theme-settings" class="button" data-i18n="theme" aria-haspopup="dialog" aria-controls="theme-dialog">主题</button>
+        <details class="dropdown preference">
+          <summary class="icon-button" aria-label="语言" title="语言" data-i18n-aria="language" data-i18n-title="language"><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><ellipse cx="12" cy="12" rx="4" ry="9"/><path d="M3 12h18"/></svg></summary>
+          <div class="dropdown-panel preference-panel">
+            <p class="dropdown-label" data-i18n="language">语言</p>
+            <button type="button" class="menu-option" data-language="zh-CN" lang="zh-CN">简体中文</button>
+            <button type="button" class="menu-option" data-language="en" lang="en">English</button>
+          </div>
+        </details>
+        <details class="dropdown preference">
+          <summary class="icon-button" aria-label="主题" title="主题" data-i18n-aria="theme" data-i18n-title="theme"><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 3a9 9 0 0 1 0 18z" fill="currentColor" stroke="none"/></svg></summary>
+          <div class="dropdown-panel preference-panel">
+            <p class="dropdown-label" data-i18n="theme">主题</p>
+            <button type="button" class="menu-option" data-theme-choice="light" data-i18n="light">亮色</button>
+            <button type="button" class="menu-option" data-theme-choice="dark" data-i18n="dark">暗色</button>
+            <button type="button" class="menu-option" data-theme-choice="auto" data-i18n="auto">自动（跟随系统）</button>
+          </div>
+        </details>
       </div>
     </div>
   </header>
   <main class="page">
     <div class="page-heading">
-      <h1 data-i18n="timeline">变动时间线</h1>
+      <div class="page-intro">
+        <p class="eyebrow" data-i18n="codeReview">代码审阅</p>
+        <h1 data-i18n="timeline">变动时间线</h1>
+      </div>
       <div class="heading-actions">
-        <button type="button" id="add-project" class="button"><span aria-hidden="true">＋</span><span data-i18n="addProject">添加工程</span></button>
-        <button type="button" id="tracking-settings" class="button" data-i18n="trackingSettings">监测设置</button>
-        <button type="button" id="refresh" class="button" title="刷新记录" data-i18n-title="refreshRecords"><span class="refresh-icon" aria-hidden="true">↻</span><span data-i18n="refresh">刷新</span></button>
+        <button type="button" id="tracking-settings" class="button"><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h16M8 5v4m8 1v4m-6 1v4"/></svg><span data-i18n="trackingSettings">监测设置</span></button>
+        <button type="button" id="refresh" class="button" title="刷新记录" data-i18n-title="refreshRecords"><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M20 12a8 8 0 1 1-2.3-5.7L20 9m0-5v5h-5"/></svg><span data-i18n="refresh">刷新</span></button>
       </div>
     </div>
     <div id="alert" class="alert" role="status" hidden></div>
@@ -41,15 +58,39 @@
         <div class="timeline-top">
           <div class="timeline-heading"><h2 data-i18n="changes">变动记录</h2><span id="count" class="count" aria-label="当前分支范围内的记录数" data-i18n-aria="branchCount">0</span></div>
           <label class="search"><span class="icon magnify" aria-hidden="true"></span><input id="search" type="search" aria-label="搜索文件或原因" placeholder="搜索文件或原因…" data-i18n-aria="search" data-i18n-placeholder="searchPlaceholder"><kbd aria-hidden="true">/</kbd></label>
-          <label class="select-wrap"><span class="icon filter" aria-hidden="true"></span><select id="source" aria-label="按来源筛选" data-i18n-aria="filterSource">
-            <option value="" data-i18n="allSources">所有来源</option><option value="codex">Codex</option><option value="claude">Claude Code</option><option value="pi">Pi</option><option value="opencode">OpenCode</option><option value="gemini">Gemini CLI</option><option value="trae">TRAE</option><option value="trae-cli">TRAE CLI</option><option value="workspace" data-i18n="workspace">工作区</option><option value="mixed" data-i18n="mixed">来源不明</option>
-          </select><span class="chevron" aria-hidden="true">⌄</span></label>
+          <div class="timeline-filters">
+            <label class="select-wrap"><span class="icon filter" aria-hidden="true"></span><select id="source" aria-label="按来源筛选" data-i18n-aria="filterSource">
+              <option value="" data-i18n="allSources">所有来源</option><option value="codex">Codex</option><option value="claude">Claude Code</option><option value="pi">Pi</option><option value="opencode">OpenCode</option><option value="gemini">Gemini CLI</option><option value="trae">TRAE</option><option value="trae-cli">TRAE CLI</option><option value="workspace" data-i18n="workspace">工作区</option><option value="mixed" data-i18n="mixed">来源不明</option>
+            </select><span class="caret" aria-hidden="true"></span></label>
+            <details class="dropdown date-dropdown" id="date-dropdown">
+              <summary class="select-wrap date-trigger"><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="6" width="16" height="14" rx="2"/><path d="M8 4v4m8-4v4M4 10h16m-11 5h2m3 0h2"/></svg><span id="date-filter-label">所有时间</span><span class="caret" aria-hidden="true"></span></summary>
+              <div class="dropdown-panel date-panel">
+                <p class="dropdown-label" data-i18n="timeFilter">时间范围</p>
+                <div class="date-presets">
+                  <button type="button" class="menu-option" data-period="all" data-i18n="allTime">所有时间</button>
+                  <button type="button" class="menu-option" data-period="today" data-i18n="today">今天</button>
+                  <button type="button" class="menu-option" data-period="yesterday" data-i18n="yesterday">昨天</button>
+                  <button type="button" class="menu-option" data-period="lastTwoDays" data-i18n="lastTwoDays">最近两天</button>
+                  <button type="button" class="menu-option" data-period="lastSevenDays" data-i18n="lastSevenDays">最近 7 天</button>
+                  <button type="button" class="menu-option" data-period="lastThirtyDays" data-i18n="lastThirtyDays">最近 30 天</button>
+                </div>
+                <form id="date-form" class="date-form">
+                  <p data-i18n="customRange">自定义范围</p>
+                  <div class="date-fields">
+                    <label><span data-i18n="startDate">开始日期</span><input type="date" id="date-start" required></label>
+                    <label><span data-i18n="endDate">结束日期</span><input type="date" id="date-end" required></label>
+                  </div>
+                  <div class="form-actions"><span id="date-error" class="form-error" role="alert"></span><button class="button primary" type="submit" data-i18n="applyRange">应用</button></div>
+                </form>
+              </div>
+            </details>
+          </div>
         </div>
         <div id="timeline-list" class="timeline-list"></div>
         <button type="button" class="button more" id="more" data-i18n="olderRecords" hidden>加载更早记录</button>
       </aside>
       <section id="inspector" class="inspector" aria-label="变动详情" data-i18n-aria="details">
-        <div id="placeholder" class="placeholder" role="status"><span class="empty-symbol" aria-hidden="true">⌘</span><h2 id="placeholder-title" data-i18n="loadingChanges">正在加载变动记录</h2><p id="placeholder-text"></p></div>
+        <div id="placeholder" class="placeholder" role="status"><span class="empty-symbol" aria-hidden="true"><svg class="ui-icon" viewBox="0 0 24 24"><circle cx="10.5" cy="10.5" r="5.5"/><path d="m15 15 4.5 4.5m-11-9h4"/></svg></span><h2 id="placeholder-title" data-i18n="loadingChanges">正在加载变动记录</h2><p id="placeholder-text"></p></div>
         <div id="detail" hidden>
           <div class="detail-top">
             <div class="detail-kicker"><span id="detail-source" class="source"></span><span id="detail-tool" class="tool"></span><time id="detail-time"></time></div>
@@ -73,14 +114,6 @@
       </section>
     </div>
     <footer id="root" class="page-footer"></footer>
-    <dialog id="project-dialog" aria-labelledby="project-dialog-title">
-      <form id="project-form">
-        <h2 id="project-dialog-title" data-i18n="addProject">添加工程</h2>
-        <label for="project-path" data-i18n="worktreePath">Git 工作树路径</label>
-        <input id="project-path" required maxlength="4096" placeholder="/Users/you/projects/repo" spellcheck="false" autocomplete="off">
-        <div class="form-actions"><span id="project-error" class="form-error" role="alert"></span><button type="button" class="button" id="cancel-project" data-i18n="cancel">取消</button><button class="button primary" type="submit" data-i18n="open">打开</button></div>
-      </form>
-    </dialog>
     <dialog id="tracking-dialog" aria-labelledby="tracking-title">
       <form id="tracking-form">
         <h2 id="tracking-title" data-i18n="trackingSettings">监测设置</h2>
@@ -95,20 +128,6 @@
           <p id="demo-tracking-help" class="setting-help" data-i18n="demoTrackingHelp" hidden>此设置仅影响演示工程。</p>
         </fieldset>
         <div class="form-actions"><span id="tracking-error" class="form-error" role="alert"></span><button type="button" class="button" id="cancel-tracking" data-i18n="cancel">取消</button><button type="submit" class="button primary" id="save-tracking" data-i18n="save" disabled>保存</button></div>
-      </form>
-    </dialog>
-    <dialog id="language-dialog" class="preference-dialog" aria-labelledby="language-title">
-      <form method="dialog">
-        <h2 id="language-title" data-i18n="language">语言</h2>
-        <select id="interface-language" aria-labelledby="language-title" autofocus><option value="zh-CN" lang="zh-CN">简体中文</option><option value="en" lang="en">English</option></select>
-        <div class="form-actions"><button class="button primary" type="submit" data-i18n="done">完成</button></div>
-      </form>
-    </dialog>
-    <dialog id="theme-dialog" class="preference-dialog" aria-labelledby="theme-title">
-      <form method="dialog">
-        <h2 id="theme-title" data-i18n="theme">主题</h2>
-        <select id="interface-theme" aria-labelledby="theme-title" autofocus><option value="light" data-i18n="light">亮色</option><option value="dark" data-i18n="dark">暗色</option><option value="auto" data-i18n="auto" selected>自动（跟随系统）</option></select>
-        <div class="form-actions"><button class="button primary" type="submit" data-i18n="done">完成</button></div>
       </form>
     </dialog>
     <dialog id="hunk-dialog" aria-labelledby="hunk-dialog-title">

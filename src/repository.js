@@ -1,21 +1,35 @@
-import { execFileSync } from 'node:child_process';
+import { execFile, execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { constants, closeSync, fstatSync, lstatSync, openSync, readlinkSync, readSync, realpathSync } from 'node:fs';
+import { constants, closeSync, fstatSync, lstatSync, openSync, readlinkSync, readSync, realpathSync, rmSync } from 'node:fs';
+import { copyFile, mkdtemp, readdir, realpath, stat } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
 import { dirname, isAbsolute, join, relative, sep } from 'node:path';
+import { promisify } from 'node:util';
 import { structuredPatch } from 'diff';
 import { addDiffSummaries } from '../web/diff-summary.js';
 
 const maxFileSize = 256 * 1024;
 const utf8 = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true });
 const gitEnv = { ...process.env, GIT_OPTIONAL_LOCKS: '0' };
+const execFileAsync = promisify(execFile);
+const gitLimits = { timeout: 5000, maxBuffer: 32 * 1024 * 1024 };
 for (const name of ['GIT_DIR', 'GIT_WORK_TREE', 'GIT_INDEX_FILE', 'GIT_COMMON_DIR', 'GIT_PREFIX']) delete gitEnv[name];
 
 function runGit(cwd, args, encoding) {
-  return execFileSync('git', args, { cwd, env: gitEnv, encoding, timeout: 5000, maxBuffer: 32 * 1024 * 1024, stdio: ['ignore', 'pipe', 'pipe'] });
+  return execFileSync('git', args, { ...gitLimits, cwd, env: gitEnv, encoding, stdio: ['ignore', 'pipe', 'pipe'] });
 }
 
 function git(cwd, ...args) {
   return runGit(cwd, args, 'utf8');
+}
+
+async function runGitAsync(cwd, args, env = gitEnv) {
+  const { stdout } = await execFileAsync('git', args, { ...gitLimits, cwd, env, encoding: 'utf8' });
+  return stdout;
+}
+
+function gitAsync(cwd, ...args) {
+  return runGitAsync(cwd, args);
 }
 
 export function repositoryRoot(cwd) {
@@ -24,6 +38,36 @@ export function repositoryRoot(cwd) {
   } catch {
     return null;
   }
+}
+
+export async function nestedWorktrees(root, stateDirectory) {
+  // Git's file listings omit ignored trees, which can contain independent repositories.
+  // Search breadth-first with a fixed budget; do not descend into another worktree.
+  const maxDirectories = 2048;
+  const pending = [root];
+  const worktrees = [];
+  for (let i = 0; i < pending.length; i++) {
+    const directory = pending[i];
+    let entries;
+    try { entries = await readdir(directory, { withFileTypes: true }); }
+    catch { continue; }
+    if (directory !== root && entries.some(entry => entry.name === '.git' && (entry.isDirectory() || entry.isFile()))) {
+      try {
+        const top = await gitAsync(directory, 'rev-parse', '--show-toplevel');
+        if (await realpath(top.replace(/\r?\n$/, '')) === directory) {
+          worktrees.push(directory);
+          continue;
+        }
+      } catch { /* Invalid .git marker; keep looking below this directory. */ }
+    }
+    for (const entry of entries) {
+      if (pending.length >= maxDirectories) break;
+      if (!entry.isDirectory() || entry.name === '.git' || entry.name === 'node_modules' || entry.name === '.venv') continue;
+      const child = join(directory, entry.name);
+      if (child !== stateDirectory) pending.push(child);
+    }
+  }
+  return worktrees;
 }
 
 export function repositoryBranch(root) {
@@ -146,8 +190,10 @@ export function repositoryHead(root, ref = 'HEAD') {
   }
 }
 
-function rawDiff(root, ...refs) {
-  const raw = git(root, 'diff', '--raw', '-z', '--no-renames', '--no-abbrev', '--no-ext-diff', '--no-textconv', '--ignore-submodules=all', ...refs, '--').split('\0');
+const rawDiffArgs = ['diff', '--raw', '-z', '--no-renames', '--no-abbrev', '--no-ext-diff', '--no-textconv', '--ignore-submodules=all'];
+
+function parseRawDiff(output) {
+  const raw = output.split('\0');
   const entries = new Map();
   for (let i = 0; i + 1 < raw.length; i += 2) {
     const [mode, newMode, oid, newOid] = raw[i].slice(1).split(' ');
@@ -162,17 +208,65 @@ function rawDiff(root, ...refs) {
 
 export function committedDiffPaths(root, base, head) {
   const from = base ?? git(root, 'hash-object', '-t', 'tree', '/dev/null').trim();
-  return rawDiff(root, from, head);
+  return parseRawDiff(git(root, ...rawDiffArgs, from, head, '--'));
 }
 
-export function worktreeDiffPaths(root, journalDirectory, head = repositoryHead(root)) {
+const untrackedArgs = ['ls-files', '-z', '--others', '--exclude-standard'];
+const pathList = output => output.split('\0').filter(Boolean);
 
-  const extra = ['--others', '--exclude-standard'];
-  if (!head) extra.unshift('--cached');
-  const entries = new Map(git(root, 'ls-files', '-z', ...extra).split('\0').filter(Boolean).map(path => [path, null]));
-  if (head) {
-    for (const [path, { before }] of rawDiff(root, head)) entries.set(path, before);
+export class UntrackedPaths {
+  constructor(root) {
+    this.root = root;
   }
+
+  async list() {
+    try {
+      const cached = await this.fromCache();
+      if (cached !== null) return cached;
+    } catch {
+      // Git or the filesystem may not support writing an untracked cache.
+      this.signature = null;
+    }
+    return pathList(await gitAsync(this.root, ...untrackedArgs));
+  }
+
+  async fromCache() {
+    const { root } = this;
+    const source = (await gitAsync(root, 'rev-parse', '--path-format=absolute', '--git-path', 'index')).replace(/\r?\n$/, '');
+    const signature = `${source}\0${stamp(await stat(source, { bigint: true }))}`;
+    if (signature !== this.signature) {
+      this.signature = null;
+      if ((await gitAsync(root, 'rev-parse', '--shared-index-path')).trim()) return null;
+      this.directory ??= await mkdtemp(join(tmpdir(), 'focus-index-'));
+      this.index = join(this.directory, 'index');
+      await copyFile(source, this.index);
+      this.signature = signature;
+    }
+    // Only the private copy is writable by Git; the real staging index stays untouched.
+    const env = { ...gitEnv, GIT_INDEX_FILE: this.index, GIT_OPTIONAL_LOCKS: '1' };
+    const status = await runGitAsync(root, ['-c', 'core.untrackedCache=true', '-c', 'core.fsmonitor=false', '-c', 'core.splitIndex=false',
+      'status', '--porcelain=v1', '-z', '--untracked-files=normal', '--ignore-submodules=all', '--no-renames'], env);
+    const loose = pathList(status).filter(line => line.startsWith('?? ')).map(line => line.slice(3));
+    const directories = loose.filter(path => path.endsWith('/'));
+    if (!directories.length) return loose;
+    // Git caches the normal (collapsed) listing. Expand just the untracked directories.
+    if (directories.reduce((size, path) => size + Buffer.byteLength(path) + 1, 0) > 64 * 1024) return null;
+    const children = await gitAsync(root, '--literal-pathspecs', ...untrackedArgs, '--', ...directories);
+    return loose.filter(path => !path.endsWith('/')).concat(pathList(children));
+  }
+
+  close() {
+    if (this.directory) rmSync(this.directory, { recursive: true, force: true });
+  }
+}
+
+export async function worktreeDiffPaths(root, journalDirectory, head, untracked) {
+  const [files, diff] = await Promise.all([
+    head ? untracked.list() : gitAsync(root, ...untrackedArgs, '--cached').then(pathList),
+    head ? gitAsync(root, ...rawDiffArgs, head, '--') : '',
+  ]);
+  const entries = new Map(files.map(path => [path, null]));
+  for (const [path, { before }] of parseRawDiff(diff)) entries.set(path, before);
   const dataRoot = dirname(journalDirectory);
   const nestedState = dataRoot !== root && inside(root, dataRoot);
   const localState = new Set(['projects.sqlite', 'projects.sqlite-wal', 'projects.sqlite-shm', 'tracking.sqlite', 'tracking.sqlite-wal', 'tracking.sqlite-shm']);

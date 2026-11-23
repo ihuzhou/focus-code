@@ -3,8 +3,9 @@ import { homedir } from 'node:os';
 import { basename, dirname, isAbsolute, join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { Journal } from './journal.js';
+import { PollWorker } from './poll-worker.js';
 import { stateDirectory, TrackingSettings } from './tracking.js';
-import { hash, repositoryRoot } from './repository.js';
+import { hash, nestedWorktrees, repositoryRoot } from './repository.js';
 
 const createCatalog = `
   CREATE TABLE IF NOT EXISTS projects (id TEXT PRIMARY KEY, root TEXT NOT NULL, opened INTEGER NOT NULL);
@@ -100,19 +101,38 @@ export class ProjectCatalog {
     return project;
   }
 
+  discover(project, now = Date.now()) {
+    if (!project || project.demo) return;
+    if (project.discovering) return project.discovering;
+    if (now < (project.nextDiscovery ?? 0)) return;
+    project.nextDiscovery = now + 15_000;
+    project.discovering = nestedWorktrees(project.root, this.directory).then(roots => {
+      if (this.closing) return;
+      // Add entries without opening their journals or displacing the explicitly opened project.
+      const insert = this.db.prepare('INSERT OR IGNORE INTO projects VALUES (?, ?, 0)');
+      for (const root of roots) insert.run(hash(root), root);
+    }).finally(() => { project.discovering = null; });
+    return project.discovering;
+  }
+
   poll(project) {
-    if (!project) return;
-    try {
-      project.journal.poll();
+    if (!project || !project.journal.tracking.get(project.root).enabled) return;
+    if (project.polling) return project.polling;
+    this.poller ??= new PollWorker();
+    project.polling = this.poller.poll(project.root, dirname(project.journal.location)).then(() => {
       project.error = null;
-    } catch (error) {
-      if (project.error !== error.message) console.error(`Focus Code (${project.root}): ${error.message}`);
+    }).catch(error => {
+      if (!this.closing && project.error !== error.message) console.error(`Focus Code (${project.root}): ${error.message}`);
       project.error = error.message;
-    }
+    }).finally(() => { project.polling = null; });
+    return project.polling;
   }
 
   close() {
+    this.closing = true;
+    void this.poller?.close();
     for (const project of this.projects.values()) {
+      project.current?.close();
       if (project !== this.initial) project.journal.close();
     }
     this.db.close();

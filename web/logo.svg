@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <defs>
+    <linearGradient id="surface" x2="1" y2="1" gradientUnits="objectBoundingBox">
+      <stop stop-color="#785CF5"/>
+      <stop offset="1" stop-color="#4829B8"/>
+    </linearGradient>
+  </defs>
+  <rect x="1" y="1" width="62" height="62" rx="17" fill="url(#surface)"/>
+  <rect x="2" y="2" width="60" height="60" rx="16" fill="none" stroke="#FFF" stroke-opacity=".22"/>
+  <g fill="none" stroke-linecap="round" stroke-linejoin="round">
+    <circle cx="28.5" cy="28.5" r="15.5" stroke="#FFF" stroke-width="3.4"/>
+    <path d="m39.8 39.8 10.3 10.3" stroke="#FFF" stroke-width="4.7"/>
+    <path d="m24 24-4.5 4.5L24 33m9-9 4.5 4.5L33 33" stroke="#E5DBFF" stroke-width="2.6"/>
+  </g>
+</svg>

@@ -45,9 +45,9 @@ focus-code show
 
 Run it in a Git project to select its worktree automatically. Run it from any other directory to open the viewer and choose a registered project from the dropdown. To open a particular project directly, you can optionally pass its path with `focus-code show /path/to/repo`.
 
-To register a project in the browser, select **添加工程** (Add project) and enter the absolute path to its Git worktree. Each worktree has its own history.
+While viewing a parent project, Focus Code searches for nested Git worktrees within a bounded directory scan, including independent repositories ignored by the parent and initialized Git submodules. They appear as separate projects in the dropdown. Select one to see uncommitted changes against its own HEAD. If a worktree is not found, run `focus-code show /path/to/child`. Each worktree has its own history.
 
-Use the top bar's **Language** button to switch between Simplified Chinese and English, or **Theme** to choose Light, Dark, or Auto. Auto follows the system theme. The browser remembers your choices.
+Use the globe icon to switch between Simplified Chinese and English, or the theme icon to choose Light, Dark, or Auto. Auto follows the system theme. The browser remembers your choices.
 
 Tracking is on by default. In **监测设置** (Tracking settings), you can change the global default or override it for the current project. With a demo project selected, these controls apply to the demo data.
 
@@ -59,8 +59,8 @@ Tracking is on by default. In **监测设置** (Tracking settings), you can chan
 | Top bar → Language and Theme | Interface language and theme | Simplified Chinese and Auto by default. The language setting applies to interface text and generated summaries. Saved reasons and explanations retain their original wording. |
 | **监测设置** (Tracking settings) → **全局默认** (Global default) | On or off | On. Applies to every project that inherits the global default, including newly discovered projects. |
 | **监测设置** → Current project | Inherit the global default, always on, or always off | Inherit. A project override takes precedence over the global default and is stored by Git worktree root. |
-| Project and branch selectors | Choose a project and all branches or a single branch | All branches. Records are filtered by the branch at capture time. The list includes local branches and branches with saved history. |
-| Timeline source and search | Filter by client or workspace changes. Search file paths, reasons, or explanations. | All sources and an empty search query. These options work with the branch filter. |
+| Project and branch selectors | Select a project, follow its current Git branch, or manually select all branches or a single branch | Opening or switching worktrees follows the selected worktree's current Git branch by default. Records are filtered by the branch at capture time. The list includes local branches and branches with saved history. |
+| Timeline date, source, and search | Filter by date, client, file path, reason, or explanation. | All dates and sources by default. Dates use the browser’s local time. Custom ranges include both dates; the last two days are yesterday and today. |
 | Diff context | Show or hide unchanged lines around a changed section | Shown by default. |
 
 - To exclude one project, keep tracking on globally and set that project to always off.

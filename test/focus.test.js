@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { execFile, execFileSync } from 'node:child_process';
-import { existsSync, mkdtempSync, mkdirSync, readFileSync, readlinkSync, realpathSync, rmSync, statSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, readlinkSync, realpathSync, rmSync, statSync, symlinkSync, unlinkSync, utimesSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -9,9 +9,11 @@ import { promisify } from 'node:util';
 import { install } from '../src/install.js';
 import { Journal } from '../src/journal.js';
 import { ProjectCatalog } from '../src/projects.js';
+import { UntrackedPaths } from '../src/repository.js';
 import { serve } from '../src/server.js';
 import { TrackingSettings } from '../src/tracking.js';
 import { addDiffSummaries, describeHunk } from '../web/diff-summary.js';
+import { timeBounds } from '../web/time-range.js';
 
 function fixture(t) {
   const dir = realpathSync(mkdtempSync(join(tmpdir(), 'focus-test-')));
@@ -681,6 +683,73 @@ test('one timeline shows live edits once, hides rollbacks, and keeps only commit
     assert.equal(saved.length, 2);
     assert.ok(saved.every(card => !card.uncommitted));
     assert.ok((await get(`/api/changes/${saved[0].id}/files/0`))[0].lines.includes('+const final = true;'));
+
+    git('switch', '-c', 'topic');
+    write('topic.js', 'const topic = true;\n');
+    const topic = await get('/api/timeline?scope=current');
+    assert.equal(topic.repository.branch, 'topic');
+    assert.ok(topic.repository.branches.includes('topic'));
+    assert.deepEqual(topic.changes.map(card => [card.branch, card.first_path]), [['topic', 'topic.js']]);
+    assert.deepEqual((await timeline('?branch=main')).map(card => card.id), saved.map(card => card.id));
+    assert.equal((await timeline()).length, saved.length + 1);
+
+    git('switch', '--detach');
+    const detached = await get('/api/timeline?scope=current');
+    assert.equal(detached.repository.branch, 'HEAD');
+    assert.deepEqual(detached.changes.map(card => card.branch), ['HEAD']);
+
+    journal.tracking.update({ root, mode: 'off' });
+    git('switch', 'main');
+    const paused = await get('/api/timeline?scope=current');
+    assert.equal(paused.repository.branch, 'main');
+    assert.equal(paused.tracking.enabled, false);
+    assert.deepEqual(paused.changes.map(card => card.id), saved.map(card => card.id));
+  } finally {
+    await new Promise(resolve => server.close(resolve));
+  }
+});
+
+test('date presets and custom ranges use local midnights and include the end day', () => {
+  const day = (month, date) => +new Date(2026, month, date);
+  const now = new Date(2026, 2, 8, 14, 30);
+  assert.deepEqual(timeBounds({ period: 'all' }, now), {});
+  assert.deepEqual(timeBounds({ period: 'today' }, now), { from: day(2, 8), until: day(2, 9) });
+  assert.deepEqual(timeBounds({ period: 'yesterday' }, now), { from: day(2, 7), until: day(2, 8) });
+  assert.deepEqual(timeBounds({ period: 'lastTwoDays' }, now), { from: day(2, 7), until: day(2, 9) });
+  assert.deepEqual(timeBounds({ period: 'lastSevenDays' }, now), { from: day(2, 2), until: day(2, 9) });
+  assert.deepEqual(timeBounds({ period: 'custom', start: '2026-03-08', end: '2026-03-08' }), { from: day(2, 8), until: day(2, 9) });
+  assert.equal(timeBounds({ period: 'custom', start: '2026-03-09', end: '2026-03-08' }), null);
+  assert.equal(timeBounds({ period: 'custom', start: '2026-02-30', end: '2026-03-08' }), null);
+});
+
+test('timeline time bounds filter committed and live entries before totals and pagination', async t => {
+  const { root, journal, write } = fixture(t);
+  const git = (...args) => execFileSync('git', ['-C', root, ...args], { stdio: 'ignore' });
+  const from = Date.UTC(2026, 2, 8);
+  const until = from + 10_000;
+  journal.poll(from - 20_000);
+  for (const [name, time] of [['old.js', from - 1], ['start.js', from], ['middle.js', from + 2000], ['end.js', until]]) {
+    write(name, 'fixture\n');
+    journal.poll(time);
+  }
+  git('add', '.');
+  git('-c', 'user.name=Focus Test', '-c', 'user.email=focus@example.test', 'commit', '--no-gpg-sign', '-qm', 'History');
+  const { server, address } = await serve(journal, { port: 0, open: false });
+  try {
+    journal.startTool('pi', 'date-filter', 'edit', 'write');
+    write('live.js', 'fixture\n');
+    utimesSync(join(root, 'live.js'), (from + 3000) / 1000, (from + 3000) / 1000);
+    const path = `/api/timeline?scope=current&from=${from}&until=${until}`;
+    const get = suffix => fetch(new URL(path + suffix, address)).then(response => response.json());
+    const first = await get('&limit=1');
+    assert.equal(first.hasMore, true);
+    assert.equal(first.stats.changes, 3);
+    assert.deepEqual(first.changes.map(card => card.first_path), ['live.js', 'middle.js']);
+    assert.deepEqual((await get('&source=pi')).changes.map(card => card.first_path), ['live.js']);
+    assert.deepEqual((await get('')).changes.map(card => card.first_path), ['live.js', 'middle.js', 'start.js']);
+    assert.deepEqual((await get('&q=old.js')).changes, []);
+    assert.equal((await fetch(new URL('/api/timeline?from=bad', address))).status, 400);
+    assert.equal((await fetch(new URL('/api/timeline?from=2&until=1', address))).status, 400);
   } finally {
     await new Promise(resolve => server.close(resolve));
   }
@@ -707,6 +776,125 @@ test('demo tracking settings can be edited without changing real project setting
     const real = new TrackingSettings(directory);
     try { assert.equal(real.get().defaultEnabled, true); }
     finally { real.close(); }
+  } finally {
+    await new Promise(resolve => server.close(resolve));
+  }
+});
+
+test('the untracked cache preserves Git ignores, literal directory names, and the real index', async t => {
+  const { root, write } = fixture(t);
+  const git = (...args) => execFileSync('git', ['-C', root, ...args], { encoding: 'utf8' });
+  write('.gitignore', '*.tmp\n');
+  git('add', '.gitignore');
+  git('-c', 'user.name=Focus Test', '-c', 'user.email=focus@example.test', 'commit', '--no-gpg-sign', '-qm', 'Initial');
+  const index = join(root, '.git', 'index');
+  const original = readFileSync(index);
+  const paths = new UntrackedPaths(root);
+  try {
+    assert.deepEqual(await paths.list(), []);
+    mkdirSync(join(root, 'new [dir]'));
+    write('new [dir]/file.js', 'new\n');
+    write('new [dir]/ignored.tmp', 'ignored\n');
+    write('loose.js', 'new\n');
+    assert.deepEqual((await paths.list()).sort(), ['loose.js', 'new [dir]/file.js']);
+    write('.gitignore', '*.skip\n');
+    assert.deepEqual((await paths.list()).sort(), ['loose.js', 'new [dir]/file.js', 'new [dir]/ignored.tmp']);
+    assert.deepEqual(readFileSync(index), original);
+    git('add', 'loose.js');
+    const staged = readFileSync(index);
+    unlinkSync(join(root, 'new [dir]/file.js'));
+    assert.deepEqual(await paths.list(), ['new [dir]/ignored.tmp']);
+    assert.deepEqual(readFileSync(index), staged);
+    git('update-index', '--split-index');
+    assert.deepEqual(await paths.list(), ['new [dir]/ignored.tmp']);
+  } finally {
+    paths.close();
+  }
+});
+
+test('change details stay responsive while the background snapshot waits on the journal', async t => {
+  const { root, journal, write } = fixture(t);
+  const git = (...args) => execFileSync('git', ['-C', root, ...args], { stdio: 'ignore' });
+  const commit = () => git('-c', 'user.name=Focus Test', '-c', 'user.email=focus@example.test', 'commit', '--no-gpg-sign', '-qm', 'Save');
+  write('base.js', 'before\n');
+  git('add', 'base.js');
+  commit();
+  const { server, address } = await serve(journal, { port: 0, open: false });
+  try {
+    const get = async path => {
+      const response = await fetch(new URL(path, address));
+      assert.equal(response.status, 200);
+      return response.json();
+    };
+    write('first.js', 'untracked\n');
+    write('second.js', 'untracked\n');
+    const { changes } = await get('/api/timeline');
+    assert.equal(changes.length, 2);
+    write('base.js', 'after\n');
+    git('add', 'base.js');
+    commit();
+    // Force the commit-triggered scan to wait for a writer, while read requests use cached diffs.
+    journal.db.exec('BEGIN IMMEDIATE');
+    let settled = false;
+    const scan = get('/api/timeline').finally(() => { settled = true; });
+    try {
+      const [first, second] = await Promise.all(changes.map(change => get(`/api/current/${change.id}`)));
+      assert.equal(first.id, changes[0].id);
+      assert.equal(second.id, changes[1].id);
+      assert.equal(settled, false);
+    } finally {
+      journal.db.exec('ROLLBACK');
+      await scan;
+    }
+  } finally {
+    await new Promise(resolve => server.close(resolve));
+  }
+});
+
+test('the viewer discovers ignored repositories and submodules as separate projects with live diffs', async t => {
+  const { dir, root, journal, write } = fixture(t);
+  const git = (cwd, ...args) => execFileSync('git', ['-C', cwd, ...args], { encoding: 'utf8' });
+  const setup = (path, file) => {
+    mkdirSync(path, { recursive: true });
+    git(path, 'init', '-q', '-b', 'main');
+    writeFileSync(join(path, file), 'before\n');
+    git(path, 'add', file);
+    git(path, '-c', 'user.name=Focus Test', '-c', 'user.email=focus@example.com', 'commit', '-qm', 'Initial');
+  };
+  const child = join(root, 'repos', 'group', 'child');
+  const source = join(dir, 'source');
+  const submodule = join(root, 'modules', 'widget');
+  write('.gitignore', '/repos/\n/mirror\n');
+  setup(child, 'child.txt');
+  setup(source, 'module.txt');
+  git(root, '-c', 'protocol.file.allow=always', 'submodule', 'add', '-q', source, 'modules/widget');
+  git(root, 'add', '.gitignore');
+  git(root, '-c', 'user.name=Focus Test', '-c', 'user.email=focus@example.com', 'commit', '-qm', 'Initial');
+  symlinkSync(source, join(root, 'mirror'));
+  writeFileSync(join(child, 'child.txt'), 'after child\n');
+  writeFileSync(join(submodule, 'module.txt'), 'after module\n');
+
+  const { server, address } = await serve(journal, { port: 0, open: false });
+  try {
+    const get = async path => {
+      const response = await fetch(new URL(path, address));
+      assert.equal(response.status, 200);
+      return response.json();
+    };
+    const { projects, selected } = await get('/api/projects');
+    const ids = new Map(projects.map(project => [project.root, project.id]));
+    assert.deepEqual(new Set(ids.keys()), new Set([root, child, submodule]));
+    assert.equal(selected, ids.get(root));
+    assert.deepEqual((await get(`/api/timeline?project=${selected}`)).changes, []);
+    for (const [path, file, after] of [[child, 'child.txt', 'after child'], [submodule, 'module.txt', 'after module']]) {
+      const project = ids.get(path);
+      const { changes } = await get(`/api/timeline?project=${project}`);
+      assert.equal(changes.length, 1);
+      assert.equal(changes[0].first_path, file);
+      assert.equal(changes[0].uncommitted, true);
+      const patch = await get(`/api/current/${changes[0].id}/files/0?project=${project}`);
+      assert.deepEqual(patch[0].lines, ['-before', `+${after}`]);
+    }
   } finally {
     await new Promise(resolve => server.close(resolve));
   }

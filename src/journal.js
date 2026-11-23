@@ -39,6 +39,7 @@ export class Journal {
         file_count INTEGER NOT NULL, added INTEGER NOT NULL, removed INTEGER NOT NULL
       );
       CREATE INDEX IF NOT EXISTS changes_branch_id ON changes (branch, id);
+      CREATE INDEX IF NOT EXISTS changes_time ON changes (time);
       CREATE INDEX IF NOT EXISTS changes_session_id ON changes (source, session, id);
       CREATE TABLE IF NOT EXISTS timeline_pending (
         change_id INTEGER PRIMARY KEY REFERENCES changes(id), base TEXT
@@ -257,7 +258,7 @@ export class Journal {
     });
   }
 
-  list({ branch, source, search, before, limit = 40, timeline = false, replaced = [] } = {}) {
+  list({ branch, source, search, before, from, until, limit = 40, timeline = false, replaced = [] } = {}) {
     const conditions = [];
     const args = [];
     const committedFile = timeline ? `(NOT EXISTS (SELECT 1 FROM timeline_pending p WHERE p.change_id = c.id)
@@ -283,6 +284,14 @@ export class Journal {
         SELECT 1 FROM files f WHERE f.change_id = c.id AND ${committedFile} AND instr(lower(f.path), ?)
       ) OR EXISTS (SELECT 1 FROM hunk_notes n WHERE n.change_id = c.id AND instr(lower(n.explanation), ?)))`);
       args.push(query, query, query, query);
+    }
+    if (from !== undefined) {
+      conditions.push('c.time >= ?');
+      args.push(from);
+    }
+    if (until !== undefined) {
+      conditions.push('c.time < ?');
+      args.push(until);
     }
     if (before) {
       conditions.push('c.id < ?');

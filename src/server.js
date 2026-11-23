@@ -9,11 +9,20 @@ import { openBrowser, viewerIdentity, viewerPorts } from './viewer.js';
 const assets = new Map([
   ['/', ['index.html', 'text/html; charset=utf-8']],
   ['/app.js', ['app.js', 'text/javascript; charset=utf-8']],
+  ['/time-range.js', ['time-range.js', 'text/javascript; charset=utf-8']],
+  ['/logo.svg', ['logo.svg', 'image/svg+xml']],
   ['/diff-summary.js', ['diff-summary.js', 'text/javascript; charset=utf-8']],
   ['/i18n.js', ['i18n.js', 'text/javascript; charset=utf-8']],
   ['/theme.js', ['theme.js', 'text/javascript; charset=utf-8']],
   ['/style.css', ['style.css', 'text/css; charset=utf-8']],
 ].map(([route, [name, type]]) => [route, { type, content: readFileSync(new URL(`../web/${name}`, import.meta.url)) }]));
+
+function timestampParameter(params, key) {
+  const value = params.get(key);
+  if (value === null) return undefined;
+  const time = Number(value);
+  return /^-?\d+$/.test(value) && Number.isSafeInteger(time) ? time : NaN;
+}
 
 function json(response, status, value) {
   response.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8' });
@@ -51,7 +60,7 @@ function listen(server, port) {
 export async function serve(initial, { port, demo = false, open = true, directory, demoProjects = [] } = {}) {
   const catalog = new ProjectCatalog(initial, { demo, directory });
   for (const journal of demoProjects) catalog.register(journal.root, { journal, demo: true });
-  catalog.poll(catalog.get());
+  await catalog.poll(catalog.get());
   const state = viewerIdentity(catalog.directory);
   let address;
   const server = createServer(async (request, response) => {
@@ -77,12 +86,17 @@ export async function serve(initial, { port, demo = false, open = true, director
       }
       if (method === 'GET' && pathname === '/api/status') return json(response, 200, { app: 'focus-code', demo, state });
       if (pathname === '/api/projects') {
-        if (method === 'GET') return json(response, 200, { projects: catalog.list(), selected: catalog.get()?.id ?? null });
+        if (method === 'GET') {
+          const selected = catalog.get();
+          await catalog.discover(selected);
+          return json(response, 200, { projects: catalog.list(), selected: selected?.id ?? null });
+        }
         if (method === 'POST') {
           const body = await readJson(request);
           const added = typeof body?.path === 'string' && catalog.open(body.path);
           if (!added) return failure(400, 'invalidWorktree');
-          catalog.poll(catalog.get(added.id));
+          const project = catalog.get(added.id);
+          await Promise.all([catalog.discover(project), catalog.poll(project)]);
           return json(response, 201, { projects: catalog.list(), selected: added.id });
         }
       }
@@ -102,12 +116,13 @@ export async function serve(initial, { port, demo = false, open = true, director
           if ((defaultEnabled === undefined && mode === undefined) || invalidDefault || invalidOverride) {
             return failure(400, 'invalidTracking');
           }
+          const affected = defaultEnabled !== undefined
+            ? [...catalog.projects.values()].filter(entry => Boolean(entry.demo) === Boolean(project?.demo))
+            : [project];
+          // A scan that started under the old setting cannot establish the new baseline.
+          await Promise.all(affected.map(entry => entry.polling));
           const settings = settingsStore.update({ defaultEnabled, mode, root: project?.root });
-          if (defaultEnabled !== undefined) {
-            for (const entry of catalog.projects.values()) {
-              if (Boolean(entry.demo) === Boolean(project?.demo)) catalog.poll(entry);
-            }
-          } else if (settings.enabled) catalog.poll(project);
+          await Promise.all(affected.map(entry => catalog.poll(entry)));
           return json(response, 200, { ...settings, editable: true, demo: Boolean(project?.demo) });
         }
       }
@@ -115,18 +130,33 @@ export async function serve(initial, { port, demo = false, open = true, director
       if (!project) return failure(404, 'missingProject');
       const { journal } = project;
       if (method === 'GET' && pathname === '/api/timeline') {
+        const from = timestampParameter(searchParams, 'from');
+        const until = timestampParameter(searchParams, 'until');
+        if (Number.isNaN(from) || Number.isNaN(until) || (from !== undefined && until !== undefined && from >= until)) {
+          return failure(400, 'invalidTimeRange');
+        }
         const current = project.current ??= new CurrentChanges(journal);
+        // Discovery updates the dropdown on the next refresh; it need not delay the timeline.
+        void catalog.discover(project)?.catch(error => console.error(`Focus Code (${project.root}): ${error.message}`));
+        const snapshot = await current.refresh();
+        if (snapshot.tracking.enabled && snapshot.head !== journal.getMeta('head')) {
+          const initializing = !journal.getMeta('initialized');
+          const scan = catalog.poll(project);
+          // Live diffs do not need a full snapshot when the project is first opened.
+          if (!initializing) await scan;
+        }
         const limit = Number(searchParams.get('limit'));
+        const branch = searchParams.get('scope') === 'current' ? snapshot.branch : searchParams.get('branch');
         return json(response, 200, {
-          ...current.timeline({ branch: searchParams.get('branch'), source: searchParams.get('source'), search: searchParams.get('q')?.slice(0, 200),
-            limit: Number.isSafeInteger(limit) && limit > 0 && limit < Number.MAX_SAFE_INTEGER ? limit : undefined }),
+          ...current.timeline({ branch, from, until, source: searchParams.get('source'), search: searchParams.get('q')?.slice(0, 200),
+            limit: Number.isSafeInteger(limit) && limit > 0 && limit < Number.MAX_SAFE_INTEGER ? limit : undefined }, snapshot),
           projects: catalog.list(), demo: project.demo, scanError: project.error,
         });
       }
       if (method === 'GET' && (pathname === '/api/current' || pathname.startsWith('/api/current/'))) {
         const current = project.current ??= new CurrentChanges(journal);
         if (pathname === '/api/current') {
-          const { tracking, branch } = current.refresh();
+          const [{ tracking, branch }] = await Promise.all([current.refresh(), catalog.discover(project)]);
           return json(response, 200, {
             ...current.list({ branch: searchParams.get('branch'), source: searchParams.get('source'), search: searchParams.get('q')?.slice(0, 200) }),
             repository: journal.repository(branch), projects: catalog.list(), demo: project.demo, scanError: project.error, tracking,
@@ -138,6 +168,7 @@ export async function serve(initial, { port, demo = false, open = true, director
         return item ? json(response, 200, item) : failure(404, 'missingChange');
       }
       if (method === 'GET' && pathname === '/api/changes') {
+        await catalog.discover(project);
         const before = Number(searchParams.get('before'));
         return json(response, 200, { ...journal.list({
           branch: searchParams.get('branch'), source: searchParams.get('source'), search: searchParams.get('q')?.slice(0, 200),

@@ -1,5 +1,5 @@
 import { describeHunk } from '../web/diff-summary.js';
-import { committedDiffPaths, fileDiff, hash, readHeadEntry, readWorktreeEntry, repositoryBranch, repositoryHead, worktreeDiffPaths } from './repository.js';
+import { committedDiffPaths, fileDiff, hash, readHeadEntry, readWorktreeEntry, repositoryBranch, repositoryBranches, repositoryHead, UntrackedPaths, worktreeDiffPaths } from './repository.js';
 
 function changedLines(hunk) {
   return hunk.lines.filter(line => line.startsWith('+') || line.startsWith('-'));
@@ -29,6 +29,7 @@ function fileMetadata(file) {
 export class CurrentChanges {
   constructor(journal) {
     this.journal = journal;
+    this.untracked = new UntrackedPaths(journal.root);
     this.cache = new Map();
     this.items = new Map();
     this.committed = new Map();
@@ -42,17 +43,32 @@ export class CurrentChanges {
     this.snapshot = journal.db.prepare('SELECT fingerprint, mode FROM snapshots WHERE path = ?');
   }
 
+  close() {
+    this.untracked.close();
+  }
+
   refresh() {
+    this.refreshing ??= this.scan().finally(() => { this.refreshing = null; });
+    return this.refreshing;
+  }
+
+  async scan() {
     const { journal } = this;
-    const tracking = journal.tracking.get(journal.root);
+    let tracking = journal.tracking.get(journal.root);
+    const branch = repositoryBranch(journal.root);
     if (!tracking.enabled) {
       this.cache.clear();
       this.items.clear();
-      return { tracking, branch: journal.getMeta('branch') };
+      return { tracking, branch };
     }
-    const branch = repositoryBranch(journal.root);
     const head = repositoryHead(journal.root);
-    const paths = worktreeDiffPaths(journal.root, journal.location, head);
+    const paths = await worktreeDiffPaths(journal.root, journal.location, head, this.untracked);
+    tracking = journal.tracking.get(journal.root);
+    if (!tracking.enabled) {
+      this.cache.clear();
+      this.items.clear();
+      return { tracking, branch };
+    }
     const pending = journal.hasActiveTools() ? journal.getMeta('batch') : null;
     const cache = new Map();
     const items = new Map();
@@ -121,18 +137,17 @@ export class CurrentChanges {
     });
   }
 
-  timeline(filters) {
-    const { tracking, branch, head } = this.refresh();
-    if (tracking.enabled) {
-      if (head !== this.journal.getMeta('head')) this.journal.poll();
-      this.reconcileCommits(branch, head);
-    }
+  timeline(filters, { tracking, branch, head }) {
+    if (tracking.enabled) this.reconcileCommits(branch, head);
     const replaced = [...new Set([...this.items.values()].map(item => item.record?.id).filter(Boolean))];
     const history = this.journal.list({ ...filters, timeline: true, replaced });
     const live = this.list(filters).changes;
     const changes = [...live, ...history.changes].sort((a, b) => b.time - a.time || Number(Boolean(b.uncommitted)) - Number(Boolean(a.uncommitted)));
-    return { ...history, changes, stats: { ...history.stats, changes: history.stats.changes + live.length }, tracking,
-      repository: { ...history.repository, branch } };
+    // A checkout can switch branches without changing HEAD's commit, before the journal catches up.
+    const localBranches = history.repository.branch !== branch ? repositoryBranches(this.journal.root) : null;
+    const branches = [...new Set([...history.repository.branches, ...(localBranches ?? []), branch])].sort();
+    const repository = { ...history.repository, branch, branches };
+    return { ...history, changes, stats: { ...history.stats, changes: history.stats.changes + live.length }, tracking, repository };
   }
 
   attribution(branch, entry, pending) {
@@ -152,10 +167,11 @@ export class CurrentChanges {
     return { source: 'workspace', tool: null, time, reason: null, reasonOrigin: null };
   }
 
-  list({ branch, source, search } = {}) {
+  list({ branch, source, search, from, until } = {}) {
     const items = [...this.items.values()].map(item => item.metadata).filter(item => !branch || item.branch === branch);
     const query = search?.trim().toLowerCase();
     const changes = items.filter(item => (!source || item.source === source) &&
+      (from === undefined || item.time >= from) && (until === undefined || item.time < until) &&
       (!query || [item.first_path, item.reason, item.tool].some(value => value?.toLowerCase().includes(query))));
     return {
       changes: changes.sort((a, b) => b.time - a.time || a.first_path.localeCompare(b.first_path)),

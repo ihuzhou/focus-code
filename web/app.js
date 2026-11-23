@@ -1,5 +1,6 @@
 import { describeHunk } from './diff-summary.js';
 import { translate } from './i18n.js';
+import { timeBounds } from './time-range.js';
 
 const $ = id => document.getElementById(id);
 const labels = { codex: 'Codex', claude: 'Claude Code', pi: 'Pi', opencode: 'OpenCode', gemini: 'Gemini CLI', trae: 'TRAE', 'trae-cli': 'TRAE CLI' };
@@ -21,12 +22,14 @@ let historyLimit = 40;
 let view = 0;
 let listRequest = 0;
 let detailRequest = 0;
+let pendingDetail = 0;
 let fileRequest = 0;
 let debounce;
 let listKey;
 let diffLimit = 1500;
 let project = '';
-let branch = '';
+const followCurrent = ':current'; // Not a valid Git ref name.
+let branch = followCurrent;
 let branchListKey;
 let projectsLoaded = false;
 let projectListKey;
@@ -35,6 +38,7 @@ let hunkTarget;
 let trackingTarget;
 let trackingInitial;
 let trackingRequest = 0;
+let timeFilter = { period: 'all' };
 
 function readPreference(key) {
   try { return localStorage.getItem(key); }
@@ -51,6 +55,7 @@ function dateFormatters() {
     full: new Intl.DateTimeFormat(language, { dateStyle: 'medium', timeStyle: 'medium' }),
     short: new Intl.DateTimeFormat(language, { hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }),
     day: new Intl.DateTimeFormat(language, { month: 'long', day: 'numeric', weekday: 'short' }),
+    range: new Intl.DateTimeFormat(language, { month: 'short', day: 'numeric' }),
   };
 }
 
@@ -63,6 +68,9 @@ function translateInterface() {
     }
   }
   document.title = `Focus Code · ${t('timeline')}`;
+  renderTimeFilter();
+  markOptions('language', language);
+  markOptions('theme-choice', document.documentElement.dataset.theme ?? 'auto');
 }
 
 function projectRoute(path, id = project) {
@@ -117,18 +125,20 @@ function updateBranchOptions(current, branches) {
   const key = JSON.stringify([language, current, branches]);
   if (key !== branchListKey) {
     branchListKey = key;
-    picker.replaceChildren(element('option', '', t('allBranches')), ...branches.map(value => {
-      const label = branchName(value);
-      const option = element('option', '', value === current ? t('currentBranch', label) : label);
+    const follow = element('option', '', current ? t('currentBranch', branchName(current)) : t('followCurrentBranch'));
+    follow.value = followCurrent;
+    const all = element('option', '', t('allBranches'));
+    all.value = '';
+    picker.replaceChildren(follow, all, ...branches.map(value => {
+      const option = element('option', '', branchName(value));
       option.value = value;
       return option;
     }));
-    picker.options[0].value = '';
-    picker.disabled = branches.length === 0;
+    picker.disabled = !current && branches.length === 0;
   }
-  const selectedBranch = branches.includes(branch) ? branch : '';
-  if (picker.value !== selectedBranch) picker.value = selectedBranch;
-  picker.title = selectedBranch ? branchName(selectedBranch) : current ? t('branchTitle', branchName(current)) : '';
+  picker.value = branch;
+  const pinned = branch && branch !== followCurrent;
+  picker.title = pinned ? branchName(branch) : current ? t('branchTitle', branchName(current)) : '';
 }
 
 function resetTimeline() {
@@ -152,7 +162,7 @@ function updateAddress() {
   const url = new URL(location.href);
   if (project) url.searchParams.set('project', project);
   else url.searchParams.delete('project');
-  if (branch) url.searchParams.set('branch', branch);
+  if (project && branch !== followCurrent) url.searchParams.set('branch', branch);
   else url.searchParams.delete('branch');
   url.searchParams.delete('view');
   history.replaceState(null, '', url);
@@ -163,7 +173,7 @@ function switchProject(id) {
   picker.title = picker.selectedOptions[0]?.title ?? '';
   const params = new URLSearchParams(location.search);
   project = id;
-  branch = id && params.get('project') === id ? params.get('branch') ?? '' : '';
+  branch = id && params.get('project') === id ? params.get('branch') ?? followCurrent : followCurrent;
   resetTimeline();
   $('root').textContent = '';
   $('demo').hidden = true;
@@ -311,15 +321,17 @@ async function refresh({ more = false } = {}) {
   const request = ++listRequest;
   if (more) historyLimit += 40;
   const parameters = new URLSearchParams({ q: $('search').value, source: $('source').value, limit: historyLimit });
-  if (branch) parameters.set('branch', branch);
+  if (branch === followCurrent) parameters.set('scope', 'current');
+  else if (branch) parameters.set('branch', branch);
+  for (const [key, value] of Object.entries(timeBounds(timeFilter))) parameters.set(key, value);
   if (more) $('more').disabled = true;
   try {
     const data = await api(projectRoute(`/api/timeline?${parameters}`));
     if (currentView !== view || request !== listRequest) return;
     updateProjectOptions(data.projects, project);
     const { branch: current, branches } = data.repository;
-    if (branch && !branches.includes(branch)) {
-      switchBranch('');
+    if (branch && branch !== followCurrent && branch !== current && !branches.includes(branch)) {
+      switchBranch(followCurrent);
       return;
     }
     updateBranchOptions(current, branches);
@@ -334,9 +346,10 @@ async function refresh({ more = false } = {}) {
       selectChange(committed.id);
     } else if (!choice || (!more && following && !editing && selected !== changes[0]?.id)) {
       selectChange(changes[0]?.id, { emptyRepo: data.stats.changes === 0, paused: data.tracking?.enabled === false });
-    } else if (!editing && (!detail || detail.reason !== choice.reason || detail.reason_origin !== choice.reason_origin ||
+    } else if (!editing && (!pendingDetail || pendingDetail !== detailRequest) &&
+      (!detail || detail.reason !== choice.reason || detail.reason_origin !== choice.reason_origin ||
       detail.notes_version !== choice.notes_version || detail.diff_revision !== choice.diff_revision || detail.history_id !== choice.history_id ||
-      detail.file_count !== choice.file_count || detail.source !== choice.source || detail.tool !== choice.tool)) {
+      detail.file_count !== choice.file_count || detail.source !== choice.source || detail.tool !== choice.tool || detail.branch !== choice.branch)) {
       void loadDetail(choice.id, file?.position);
     }
     renderList();
@@ -368,6 +381,8 @@ function selectChange(id, { emptyRepo, paused } = {}) {
     void loadDetail(selected);
   } else if (emptyRepo && paused) {
     placeholder(t('paused'), t('resumeHint'));
+  } else if (emptyRepo && timeFilter.period !== 'all') {
+    placeholder(t('noChangesInRange'), t('changeRangeHint'));
   } else if (emptyRepo && branch) {
     placeholder(t('noBranchHistory'), t('otherBranchHint'));
   } else if (emptyRepo) {
@@ -378,7 +393,7 @@ function selectChange(id, { emptyRepo, paused } = {}) {
 }
 
 async function loadDetail(id, position) {
-  const request = ++detailRequest;
+  const request = pendingDetail = ++detailRequest;
   try {
     const data = await api(projectRoute(`${changeApi(id)}?timeline=1`));
     if (selected !== data.id || request !== detailRequest) return;
@@ -400,6 +415,8 @@ async function loadDetail(id, position) {
     void selectFile(data.files.find(item => item.position === position) ?? data.files[0], { keepScroll: position !== undefined });
   } catch (error) {
     if (selected === id && request === detailRequest) placeholder(t('detailError'), error.message);
+  } finally {
+    if (request === pendingDetail) pendingDetail = 0;
   }
 }
 
@@ -559,28 +576,76 @@ function applyFilters() {
 
 const jsonOptions = data => ({ method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data) });
 
-$('language-settings').addEventListener('click', () => {
-  $('interface-language').value = language;
-  $('language-dialog').showModal();
+function markOptions(attribute, value) {
+  for (const button of document.querySelectorAll(`button[data-${attribute}]`)) {
+    button.setAttribute('aria-pressed', String(button.getAttribute(`data-${attribute}`) === value));
+  }
+}
+
+function closeDropdown(dropdown, restoreFocus = false) {
+  dropdown.open = false;
+  if (restoreFocus) dropdown.querySelector('summary').focus();
+}
+
+function renderTimeFilter() {
+  const { period, start, end } = timeFilter;
+  const label = period === 'custom' ? t('customRange') : t(period === 'all' ? 'allTime' : period);
+  const summary = $('date-dropdown').querySelector('summary');
+  const bounds = timeBounds(timeFilter);
+  $('date-filter-label').textContent = period === 'custom'
+    ? dates.range.formatRange(new Date(bounds.from), new Date(bounds.until - 1)) : label;
+  const description = period === 'custom' ? `${label}: ${start} – ${end}` : `${t('timeFilter')}: ${label}`;
+  summary.title = description;
+  summary.setAttribute('aria-label', description);
+  summary.classList.toggle('active', period !== 'all');
+  markOptions('period', period);
+}
+
+function setTimeFilter(filter) {
+  timeFilter = filter;
+  $('date-error').textContent = '';
+  renderTimeFilter();
+  closeDropdown($('date-dropdown'), true);
+  applyFilters();
+}
+
+for (const button of document.querySelectorAll('button[data-period]')) {
+  button.addEventListener('click', () => setTimeFilter({ period: button.dataset.period }));
+}
+$('date-form').addEventListener('input', () => { $('date-error').textContent = ''; });
+$('date-form').addEventListener('submit', event => {
+  event.preventDefault();
+  const filter = { period: 'custom', start: $('date-start').value, end: $('date-end').value };
+  if (timeBounds(filter)) setTimeFilter(filter);
+  else $('date-error').textContent = t('invalidTimeRange');
 });
-$('theme-settings').addEventListener('click', () => {
-  $('interface-theme').value = document.documentElement.dataset.theme ?? 'auto';
-  $('theme-dialog').showModal();
-});
-$('interface-language').addEventListener('change', event => {
-  language = event.target.value === 'en' ? 'en' : 'zh-CN';
-  savePreference('focus-code-language', language);
-  dates = dateFormatters();
-  translateInterface();
-  renderList();
-  if (selected) void loadDetail(selected, file?.position);
-  void refresh();
-});
-$('interface-theme').addEventListener('change', event => {
-  const theme = event.target.value;
-  if (theme === 'light' || theme === 'dark') document.documentElement.dataset.theme = theme;
-  else delete document.documentElement.dataset.theme;
-  savePreference('focus-code-theme', theme);
+
+for (const button of document.querySelectorAll('button[data-language]')) {
+  button.addEventListener('click', () => {
+    language = button.dataset.language;
+    savePreference('focus-code-language', language);
+    dates = dateFormatters();
+    translateInterface();
+    closeDropdown(button.closest('details'), true);
+    renderList();
+    if (selected) void loadDetail(selected, file?.position);
+    void refresh();
+  });
+}
+for (const button of document.querySelectorAll('button[data-theme-choice]')) {
+  button.addEventListener('click', () => {
+    const theme = button.dataset.themeChoice;
+    if (theme === 'light' || theme === 'dark') document.documentElement.dataset.theme = theme;
+    else delete document.documentElement.dataset.theme;
+    savePreference('focus-code-theme', theme);
+    markOptions('theme-choice', theme);
+    closeDropdown(button.closest('details'), true);
+  });
+}
+document.addEventListener('click', event => {
+  for (const dropdown of document.querySelectorAll('.dropdown[open]')) {
+    if (!dropdown.contains(event.target)) closeDropdown(dropdown);
+  }
 });
 
 $('tracking-settings').addEventListener('click', async () => {
@@ -637,28 +702,6 @@ $('tracking-form').addEventListener('submit', async event => {
 
 $('project').addEventListener('change', event => switchProject(event.target.value));
 $('branch').addEventListener('change', event => switchBranch(event.target.value));
-$('add-project').addEventListener('click', () => {
-  $('project-error').textContent = '';
-  $('project-dialog').showModal();
-  $('project-path').focus();
-});
-$('cancel-project').addEventListener('click', () => $('project-dialog').close());
-$('project-form').addEventListener('submit', async event => {
-  event.preventDefault();
-  const submit = event.submitter;
-  if (submit) submit.disabled = true;
-  try {
-    const data = await api('/api/projects', jsonOptions({ path: $('project-path').value }));
-    $('project-dialog').close();
-    $('project-path').value = '';
-    projectsRequest++;
-    renderProjects(data);
-  } catch (error) {
-    $('project-error').textContent = error.message;
-  } finally {
-    if (submit) submit.disabled = false;
-  }
-});
 $('cancel-hunk').addEventListener('click', () => $('hunk-dialog').close());
 $('hunk-form').addEventListener('submit', async event => {
   event.preventDefault();
@@ -724,6 +767,12 @@ $('reason-form').addEventListener('submit', async event => {
   }
 });
 window.addEventListener('keydown', event => {
+  const dropdown = document.querySelector('.dropdown[open]');
+  if (event.key === 'Escape' && dropdown && !document.querySelector('dialog[open]')) {
+    event.preventDefault();
+    closeDropdown(dropdown, true);
+    return;
+  }
   if (document.querySelector('dialog[open]') || event.key !== '/' || event.metaKey || event.ctrlKey || event.altKey || event.target.matches?.('input, textarea, select, [contenteditable]')) return;
   event.preventDefault();
   $('search').focus();
