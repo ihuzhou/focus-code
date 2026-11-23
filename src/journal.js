@@ -3,7 +3,7 @@ import { mkdirSync, realpathSync } from 'node:fs';
 import { basename, dirname, join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { addDiffSummaries, describeHunk } from '../web/diff-summary.js';
-import { fileDiff, hash, repositoryBranch, repositoryBranches, scanFiles } from './repository.js';
+import { fileDiff, hash, repositoryBranch, repositoryBranches, repositoryHead, scanFiles } from './repository.js';
 import { stateDirectory, TrackingSettings } from './tracking.js';
 
 export { stateDirectory } from './tracking.js';
@@ -40,11 +40,22 @@ export class Journal {
       );
       CREATE INDEX IF NOT EXISTS changes_branch_id ON changes (branch, id);
       CREATE INDEX IF NOT EXISTS changes_session_id ON changes (source, session, id);
+      CREATE TABLE IF NOT EXISTS timeline_pending (
+        change_id INTEGER PRIMARY KEY REFERENCES changes(id), base TEXT
+      );
       CREATE TABLE IF NOT EXISTS files (
         change_id INTEGER NOT NULL REFERENCES changes(id), position INTEGER NOT NULL,
         path TEXT NOT NULL, status TEXT NOT NULL, added INTEGER NOT NULL, removed INTEGER NOT NULL,
         limitation TEXT, old_mode TEXT, new_mode TEXT, hunks TEXT NOT NULL,
         PRIMARY KEY (change_id, position)
+      );
+      CREATE TABLE IF NOT EXISTS timeline_after (
+        change_id INTEGER NOT NULL, position INTEGER NOT NULL, fingerprint TEXT,
+        PRIMARY KEY (change_id, position), FOREIGN KEY (change_id, position) REFERENCES files(change_id, position)
+      );
+      CREATE TABLE IF NOT EXISTS timeline_confirmed (
+        change_id INTEGER NOT NULL, position INTEGER NOT NULL,
+        PRIMARY KEY (change_id, position), FOREIGN KEY (change_id, position) REFERENCES files(change_id, position)
       );
       CREATE INDEX IF NOT EXISTS files_path_history ON files (path, change_id);
       CREATE TABLE IF NOT EXISTS hunk_notes (
@@ -119,7 +130,11 @@ export class Journal {
     const readPrevious = this.db.prepare('SELECT mode, fingerprint, text, limitation FROM snapshots WHERE path = ?');
     const updates = scanFiles(this.root, previous, path => readPrevious.get(path), this.location);
     const branch = repositoryBranch(this.root);
-    if (branch !== this.getMeta('branch')) this.setMeta('branch', branch);
+    const previousBranch = this.getMeta('branch');
+    if (branch !== previousBranch) this.setMeta('branch', branch);
+    const head = repositoryHead(this.root);
+    const previousHead = this.getMeta('head');
+    if (head !== previousHead) this.setMeta('head', head);
     const localBranches = repositoryBranches(this.root);
     if (localBranches && JSON.stringify(localBranches) !== JSON.stringify(this.getMeta('localBranches'))) {
       this.setMeta('localBranches', localBranches);
@@ -131,7 +146,7 @@ export class Journal {
     for (const { path, before, after, change } of updates) {
       if (after) write.run(path, after.signature, after.mode, after.fingerprint, after.text, after.limitation);
       else remove.run(path);
-      if (initialized && change) files.push(fileDiff(path, before, after));
+      if (initialized && change) files.push({ ...fileDiff(path, before, after), fingerprint: after?.fingerprint ?? null });
     }
     if (files.length === 0) return null;
     files.sort((a, b) => a.path.localeCompare(b.path));
@@ -141,9 +156,12 @@ export class Journal {
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(time, source, session, tools.join(' · ') || null, branch, reason?.reason ?? null, reason ? 'agent' : null,
       files.length, files.reduce((sum, file) => sum + file.added, 0), files.reduce((sum, file) => sum + file.removed, 0));
+    this.db.prepare('INSERT INTO timeline_pending VALUES (?, ?)').run(id, previousBranch === branch ? previousHead : head);
     const insert = this.db.prepare('INSERT INTO files VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)');
+    const markAfter = this.db.prepare('INSERT INTO timeline_after VALUES (?, ?, ?)');
     for (const [position, file] of files.entries()) {
       insert.run(id, position, file.path, file.status, file.added, file.removed, file.limitation, file.oldMode, file.newMode, JSON.stringify(file.hunks));
+      markAfter.run(id, position, file.fingerprint);
     }
     if (reason) this.db.prepare('DELETE FROM reasons WHERE source = ? AND session = ? AND time = ?').run(source, session, reason.time);
     return id;
@@ -239,9 +257,18 @@ export class Journal {
     });
   }
 
-  list({ branch, source, search, before, limit = 40 } = {}) {
+  list({ branch, source, search, before, limit = 40, timeline = false, replaced = [] } = {}) {
     const conditions = [];
     const args = [];
+    const committedFile = timeline ? `(NOT EXISTS (SELECT 1 FROM timeline_pending p WHERE p.change_id = c.id)
+      OR EXISTS (SELECT 1 FROM timeline_confirmed t WHERE t.change_id = f.change_id AND t.position = f.position))` : '1';
+    if (timeline) {
+      conditions.push(`EXISTS (SELECT 1 FROM files f WHERE f.change_id = c.id AND ${committedFile})`);
+      if (replaced.length) {
+        conditions.push('(c.id NOT IN (SELECT value FROM json_each(?)) OR EXISTS (SELECT 1 FROM timeline_pending p WHERE p.change_id = c.id))');
+        args.push(JSON.stringify(replaced));
+      }
+    }
     if (branch) {
       conditions.push('c.branch = ?');
       args.push(branch);
@@ -253,7 +280,7 @@ export class Journal {
     if (search?.trim()) {
       const query = search.trim().toLowerCase();
       conditions.push(`(instr(lower(c.reason), ?) OR instr(lower(c.tool), ?) OR EXISTS (
-        SELECT 1 FROM files f WHERE f.change_id = c.id AND instr(lower(f.path), ?)
+        SELECT 1 FROM files f WHERE f.change_id = c.id AND ${committedFile} AND instr(lower(f.path), ?)
       ) OR EXISTS (SELECT 1 FROM hunk_notes n WHERE n.change_id = c.id AND instr(lower(n.explanation), ?)))`);
       args.push(query, query, query, query);
     }
@@ -262,18 +289,21 @@ export class Journal {
       args.push(before);
     }
     const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
+    const fileStats = timeline ? `, (SELECT count(*) FROM files f WHERE f.change_id = c.id AND ${committedFile}) file_count,
+      (SELECT sum(added) FROM files f WHERE f.change_id = c.id AND ${committedFile}) added,
+      (SELECT sum(removed) FROM files f WHERE f.change_id = c.id AND ${committedFile}) removed` : '';
     const changes = this.db.prepare(`
-      SELECT c.*, (SELECT path FROM files WHERE change_id = c.id ORDER BY position LIMIT 1) first_path,
+      SELECT c.*${fileStats}, (SELECT path FROM files f WHERE f.change_id = c.id AND ${committedFile} ORDER BY position LIMIT 1) first_path,
         (SELECT max(revision) FROM hunk_notes WHERE change_id = c.id) notes_version
       FROM changes c ${where} ORDER BY c.id DESC LIMIT ?
     `).all(...args, limit + 1);
     const hasMore = changes.length > limit;
     if (hasMore) changes.pop();
-    const scope = branch ? 'WHERE branch = ?' : '';
+    const scope = timeline ? '' : branch ? 'WHERE branch = ?' : '';
     const stats = this.db.prepare(`
-      SELECT count(*) changes, count(DISTINCT CASE WHEN session IS NOT NULL THEN source END) agents, max(id) latest
-      FROM changes ${scope}
-    `).get(...(branch ? [branch] : []));
+      SELECT count(*) changes, count(DISTINCT CASE WHEN c.session IS NOT NULL THEN c.source END) agents, max(c.id) latest
+      FROM changes c ${timeline ? where : scope}
+    `).get(...(timeline ? args : branch ? [branch] : []));
     return {
       repository: this.repository(),
       stats,
@@ -293,16 +323,24 @@ export class Journal {
     return this.db.prepare('SELECT min(id) id FROM changes WHERE source = ? AND session = ?').get(source, session).id === id;
   }
 
-  detail(id, { includeReasonEvidence = false, language = 'zh-CN' } = {}) {
+  detail(id, { includeReasonEvidence = false, language = 'zh-CN', timeline = false } = {}) {
     const change = this.db.prepare(`
       SELECT c.*, (SELECT max(revision) FROM hunk_notes WHERE change_id = c.id) notes_version
       FROM changes c WHERE c.id = ?
     `).get(id);
     if (!change) return null;
+    const confirmedOnly = timeline && this.db.prepare('SELECT 1 FROM timeline_pending WHERE change_id = ?').get(id);
     const files = this.db.prepare(`
       SELECT position, path, status, added, removed, limitation, old_mode, new_mode
-      FROM files WHERE change_id = ? ORDER BY position
+      FROM files f WHERE change_id = ? ${confirmedOnly ? 'AND EXISTS (SELECT 1 FROM timeline_confirmed t WHERE t.change_id = f.change_id AND t.position = f.position)' : ''}
+      ORDER BY position
     `).all(id);
+    if (confirmedOnly) {
+      if (!files.length) return null;
+      change.file_count = files.length;
+      change.added = files.reduce((sum, file) => sum + file.added, 0);
+      change.removed = files.reduce((sum, file) => sum + file.removed, 0);
+    }
     const reasonEvidence = includeReasonEvidence && !change.reason ? this.reasonEvidence(id, files, language) : undefined;
     return { ...change, files, ...(reasonEvidence ? { reason_evidence: reasonEvidence } : {}) };
   }

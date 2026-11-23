@@ -16,14 +16,12 @@ let detail;
 let file;
 let hunks;
 let patchMessage;
-let changeView = new URLSearchParams(location.search).get('view') === 'history' ? 'history' : 'current';
-const changesApi = () => changeView === 'current' ? '/api/current' : '/api/changes';
+const changeApi = id => `${typeof id === 'string' ? '/api/current' : '/api/changes'}/${id}`;
+let historyLimit = 40;
 let view = 0;
 let listRequest = 0;
 let detailRequest = 0;
 let fileRequest = 0;
-let paginated = false;
-let pageHasMore = false;
 let debounce;
 let listKey;
 let diffLimit = 1500;
@@ -141,7 +139,7 @@ function resetTimeline() {
   detail = file = hunks = null;
   changes = [];
   following = true;
-  paginated = false;
+  historyLimit = 40;
   clearTimeout(debounce);
   $('reason-form').hidden = true;
   $('hunk-dialog').close();
@@ -156,8 +154,7 @@ function updateAddress() {
   else url.searchParams.delete('project');
   if (branch) url.searchParams.set('branch', branch);
   else url.searchParams.delete('branch');
-  if (changeView === 'history') url.searchParams.set('view', changeView);
-  else url.searchParams.delete('view');
+  url.searchParams.delete('view');
   history.replaceState(null, '', url);
 }
 
@@ -179,20 +176,6 @@ function switchProject(id) {
   } else {
     renderEmptyProjects();
   }
-}
-
-function updateViewButtons() {
-  for (const mode of ['current', 'history']) $(`view-${mode}`).setAttribute('aria-pressed', String(mode === changeView));
-}
-
-function switchChangeView(mode) {
-  if (mode === changeView) return;
-  changeView = mode;
-  updateViewButtons();
-  resetTimeline();
-  updateAddress();
-  placeholder(t('loadingChanges'), '');
-  void refresh();
 }
 
 function switchBranch(value) {
@@ -279,7 +262,15 @@ function renderList() {
     time.dateTime = new Date(change.time).toISOString();
     time.title = dates.full.format(change.time);
     const line = element('span', 'event-line');
-    line.append(element('span', `source ${change.source}`, sourceName(change.source)), time);
+    const badges = element('span', 'event-badges');
+    badges.append(element('span', `source ${change.source}`, sourceName(change.source)));
+    if (change.uncommitted) {
+      const tag = element('span', 'head-tag', 'HEAD');
+      tag.title = t('uncommittedChange');
+      tag.setAttribute('aria-label', t('uncommittedChange'));
+      badges.append(tag);
+    }
+    line.append(badges, time);
     const name = element('span', 'event-title', title(change));
     name.title = title(change);
     const foot = element('span', 'event-foot');
@@ -317,14 +308,14 @@ function renderConnection(data, error) {
 async function refresh({ more = false } = {}) {
   if (!project) return loadProjects();
   const currentView = view;
-  const request = more ? null : ++listRequest;
-  const parameters = new URLSearchParams({ q: $('search').value, source: $('source').value });
+  const request = ++listRequest;
+  if (more) historyLimit += 40;
+  const parameters = new URLSearchParams({ q: $('search').value, source: $('source').value, limit: historyLimit });
   if (branch) parameters.set('branch', branch);
-  if (more && changes.length) parameters.set('before', changes.at(-1).id);
   if (more) $('more').disabled = true;
   try {
-    const data = await api(projectRoute(`${changesApi()}?${parameters}`));
-    if (currentView !== view || (!more && request !== listRequest)) return;
+    const data = await api(projectRoute(`/api/timeline?${parameters}`));
+    if (currentView !== view || request !== listRequest) return;
     updateProjectOptions(data.projects, project);
     const { branch: current, branches } = data.repository;
     if (branch && !branches.includes(branch)) {
@@ -333,29 +324,24 @@ async function refresh({ more = false } = {}) {
     }
     updateBranchOptions(current, branches);
     renderConnection(data);
-    if (more) {
-      paginated = true;
-      pageHasMore = data.hasMore;
-      const byId = new Map([...changes, ...data.changes].map(change => [change.id, change]));
-      changes = [...byId.values()].sort((a, b) => b.id - a.id);
-    } else if (paginated && data.changes.length) {
-      changes = [...data.changes, ...changes.filter(change => change.id < data.changes.at(-1).id)];
-    } else {
-      changes = data.changes;
-    }
-    $('more').hidden = !(paginated ? pageHasMore : data.hasMore);
+    const previous = changes.find(change => change.id === selected);
+    changes = data.changes;
+    $('more').hidden = !data.hasMore;
     const choice = changes.find(change => change.id === selected);
+    const committed = !choice && previous?.uncommitted && changes.find(change => change.id === previous.history_id);
     const editing = !$('reason-form').hidden || $('hunk-dialog').open;
-    if (!choice || (!more && following && !editing && selected !== changes[0]?.id)) {
+    if (committed) {
+      selectChange(committed.id);
+    } else if (!choice || (!more && following && !editing && selected !== changes[0]?.id)) {
       selectChange(changes[0]?.id, { emptyRepo: data.stats.changes === 0, paused: data.tracking?.enabled === false });
     } else if (!editing && (!detail || detail.reason !== choice.reason || detail.reason_origin !== choice.reason_origin ||
       detail.notes_version !== choice.notes_version || detail.diff_revision !== choice.diff_revision || detail.history_id !== choice.history_id ||
-      detail.source !== choice.source || detail.tool !== choice.tool)) {
+      detail.file_count !== choice.file_count || detail.source !== choice.source || detail.tool !== choice.tool)) {
       void loadDetail(choice.id, file?.position);
     }
     renderList();
   } catch (error) {
-    if (currentView === view && (!request || request === listRequest)) {
+    if (currentView === view && request === listRequest) {
       renderConnection(null, error);
       if (!detail) placeholder(t('historyError'), t('serverHint'));
     }
@@ -382,8 +368,6 @@ function selectChange(id, { emptyRepo, paused } = {}) {
     void loadDetail(selected);
   } else if (emptyRepo && paused) {
     placeholder(t('paused'), t('resumeHint'));
-  } else if (emptyRepo && changeView === 'current') {
-    placeholder(t('noCurrentChanges'), t('currentChangesHint'));
   } else if (emptyRepo && branch) {
     placeholder(t('noBranchHistory'), t('otherBranchHint'));
   } else if (emptyRepo) {
@@ -396,7 +380,7 @@ function selectChange(id, { emptyRepo, paused } = {}) {
 async function loadDetail(id, position) {
   const request = ++detailRequest;
   try {
-    const data = await api(projectRoute(`${changesApi()}/${id}`));
+    const data = await api(projectRoute(`${changeApi(id)}?timeline=1`));
     if (selected !== data.id || request !== detailRequest) return;
     detail = data;
     $('placeholder').hidden = true;
@@ -445,7 +429,7 @@ function renderReason() {
   $('reason').hidden = editor;
   $('reason').classList.toggle('missing', Boolean(summary));
   $('edit-reason').textContent = t(detail.reason ? 'edit' : 'addReason');
-  $('edit-reason').hidden = editor || changeView === 'current';
+  $('edit-reason').hidden = editor || (detail.uncommitted && !detail.history_id);
 }
 
 function renderFiles() {
@@ -480,7 +464,7 @@ async function selectFile(item, { keepScroll = false } = {}) {
     $('diff-view').scrollTo(0, 0);
   }
   try {
-    const data = await api(projectRoute(`${changesApi()}/${id}/files/${item.position}`));
+    const data = await api(projectRoute(`${changeApi(id)}/files/${item.position}`));
     if (selected !== id || request !== fileRequest) return;
     hunks = data;
     patchMessage = fileLimitation(item.limitation) || (item.old_mode && item.new_mode && item.old_mode !== item.new_mode
@@ -498,7 +482,7 @@ function hunkNote(hunk, index) {
   const source = t(hunk.explanation_origin === 'agent' ? 'agentExplanation' : hunk.explanation_origin === 'user' ? 'sourceUser' : 'diffSummary');
   info.append(element('span', 'hunk-label', source), element('p', '', hunk.explanation ?? describeHunk(hunk, language)));
   note.append(info);
-  if (changeView === 'current') return note;
+  if (detail.uncommitted) return note;
   const button = element('button', 'button subtle', t(hunk.explanation ? 'editExplanation' : 'addExplanation'));
   button.type = 'button';
   button.setAttribute('aria-label', t('sectionLabel', button.textContent, index + 1));
@@ -568,7 +552,7 @@ function renderDiff() {
 
 function applyFilters() {
   view++;
-  paginated = false;
+  historyLimit = 40;
   following = true;
   void refresh();
 }
@@ -648,8 +632,6 @@ $('tracking-form').addEventListener('submit', async event => {
   }
 });
 
-$('view-current').addEventListener('click', () => switchChangeView('current'));
-$('view-history').addEventListener('click', () => switchChangeView('history'));
 $('project').addEventListener('change', event => switchProject(event.target.value));
 $('branch').addEventListener('change', event => switchBranch(event.target.value));
 $('add-project').addEventListener('click', () => {
@@ -725,11 +707,10 @@ $('reason-form').addEventListener('submit', async event => {
   const submit = event.submitter;
   if (submit) submit.disabled = true;
   try {
-    const result = await api(projectRoute(`/api/changes/${id}/reason`, origin), jsonOptions({ reason: $('reason-input').value }));
+    await api(projectRoute(`/api/changes/${detail.history_id ?? id}/reason`, origin), jsonOptions({ reason: $('reason-input').value }));
     if (project === origin && selected === id) {
-      detail = result;
       $('reason-form').hidden = true;
-      renderReason();
+      await loadDetail(id, file?.position);
       $('edit-reason').focus();
     }
     await refresh();
@@ -746,10 +727,9 @@ window.addEventListener('keydown', event => {
 });
 async function pollTimeline() {
   if (!document.hidden) await refresh();
-  setTimeout(pollTimeline, changeView === 'current' ? 800 : 1500);
+  setTimeout(pollTimeline, 800);
 }
 
 translateInterface();
-updateViewButtons();
 void pollTimeline();
 document.addEventListener('visibilitychange', () => { if (!document.hidden) void refresh(); });

@@ -114,6 +114,15 @@ export async function serve(initial, { port, demo = false, open = true, director
       const project = catalog.get(searchParams.get('project'));
       if (!project) return failure(404, 'missingProject');
       const { journal } = project;
+      if (method === 'GET' && pathname === '/api/timeline') {
+        const current = project.current ??= new CurrentChanges(journal);
+        const limit = Number(searchParams.get('limit'));
+        return json(response, 200, {
+          ...current.timeline({ branch: searchParams.get('branch'), source: searchParams.get('source'), search: searchParams.get('q')?.slice(0, 200),
+            limit: Number.isSafeInteger(limit) && limit > 0 && limit < Number.MAX_SAFE_INTEGER ? limit : undefined }),
+          projects: catalog.list(), demo: project.demo, scanError: project.error,
+        });
+      }
       if (method === 'GET' && (pathname === '/api/current' || pathname.startsWith('/api/current/'))) {
         const current = project.current ??= new CurrentChanges(journal);
         if (pathname === '/api/current') {
@@ -140,7 +149,7 @@ export async function serve(initial, { port, demo = false, open = true, director
         const id = Number(match[1]);
         if (!Number.isSafeInteger(id)) return failure(404, 'missingChange');
         const [, , action, position, hunk] = match;
-        const detail = () => journal.detail(id, { includeReasonEvidence: true, language });
+        const detail = () => journal.detail(id, { includeReasonEvidence: true, language, timeline: searchParams.get('timeline') === '1' });
         if (method === 'GET' && hunk === undefined) {
           const item = position !== undefined ? journal.patch(id, Number(position)) : action ? null : detail();
           return item ? json(response, 200, item) : failure(404, 'missingChange');

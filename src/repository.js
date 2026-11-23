@@ -138,23 +138,40 @@ export function scanFiles(root, previous, readPrevious, ownDirectory) {
   });
 }
 
-export function worktreeDiffPaths(root, journalDirectory) {
-  let head = false;
-  try { git(root, 'rev-parse', '--verify', '--quiet', 'HEAD'); head = true; }
+export function repositoryHead(root, ref = 'HEAD') {
+  try { return git(root, 'rev-parse', '--verify', '--quiet', ref).trim(); }
   catch (error) {
     if (error.status !== 1) throw error;
+    return null;
   }
+}
+
+function rawDiff(root, ...refs) {
+  const raw = git(root, 'diff', '--raw', '-z', '--no-renames', '--no-abbrev', '--no-ext-diff', '--no-textconv', '--ignore-submodules=all', ...refs, '--').split('\0');
+  const entries = new Map();
+  for (let i = 0; i + 1 < raw.length; i += 2) {
+    const [mode, newMode, oid, newOid] = raw[i].slice(1).split(' ');
+    if (mode === '160000' || newMode === '160000') continue;
+    entries.set(raw[i + 1], {
+      before: mode === '000000' ? null : { mode, oid },
+      after: newMode === '000000' ? null : { mode: newMode, oid: newOid },
+    });
+  }
+  return entries;
+}
+
+export function committedDiffPaths(root, base, head) {
+  const from = base ?? git(root, 'hash-object', '-t', 'tree', '/dev/null').trim();
+  return rawDiff(root, from, head);
+}
+
+export function worktreeDiffPaths(root, journalDirectory, head = repositoryHead(root)) {
 
   const extra = ['--others', '--exclude-standard'];
   if (!head) extra.unshift('--cached');
   const entries = new Map(git(root, 'ls-files', '-z', ...extra).split('\0').filter(Boolean).map(path => [path, null]));
   if (head) {
-    const raw = git(root, 'diff', '--raw', '-z', '--no-renames', '--no-abbrev', '--no-ext-diff', '--no-textconv', '--ignore-submodules=all', 'HEAD', '--').split('\0');
-    for (let i = 0; i + 1 < raw.length; i += 2) {
-      const [mode, newMode, oid] = raw[i].slice(1).split(' ');
-      if (mode === '160000' || newMode === '160000') continue;
-      entries.set(raw[i + 1], mode === '000000' ? null : { mode, oid });
-    }
+    for (const [path, { before }] of rawDiff(root, head)) entries.set(path, before);
   }
   const dataRoot = dirname(journalDirectory);
   const nestedState = dataRoot !== root && inside(root, dataRoot);

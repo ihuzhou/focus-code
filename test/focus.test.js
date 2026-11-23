@@ -637,6 +637,55 @@ test('current changes show Pi edits before completion and remove deleted or reve
   }
 });
 
+test('one timeline shows live edits once, hides rollbacks, and keeps only committed files', async t => {
+  const { root, journal, write } = fixture(t);
+  const git = (...args) => execFileSync('git', args, { cwd: root, stdio: 'ignore' });
+  const commit = () => git('-c', 'user.name=Focus Test', '-c', 'user.email=focus@example.test', 'commit', '--no-gpg-sign', '-qm', 'Save edits');
+  write('base.js', 'const baseline = true;\n');
+  git('add', 'base.js');
+  commit();
+  const { server, address } = await serve(journal, { port: 0, open: false });
+  try {
+    const get = path => fetch(new URL(path, address)).then(response => response.json());
+    const timeline = async (query = '') => (await get(`/api/timeline${query}`)).changes;
+    journal.startTool('pi', 'active', 'write', 'write');
+    write('alpha.js', 'const saved = true;\n');
+    write('scratch.js', 'const discarded = true;\n');
+    const pending = await timeline('?source=pi');
+    assert.equal(pending.length, 2);
+    assert.ok(pending.every(card => card.uncommitted));
+    const record = journal.endTool('pi', 'active', 'write');
+    assert.equal((await timeline()).length, 2);
+    assert.ok((await timeline()).every(card => card.history_id === record));
+    unlinkSync(join(root, 'scratch.js'));
+    assert.deepEqual((await timeline()).map(card => card.first_path), ['alpha.js']);
+    git('add', 'alpha.js');
+    commit();
+    const published = await timeline('?source=pi');
+    assert.deepEqual(published.map(card => [card.id, card.first_path, card.file_count, Boolean(card.uncommitted)]), [[record, 'alpha.js', 1, false]]);
+    assert.deepEqual((await get(`/api/changes/${record}?timeline=1`)).files.map(file => file.path), ['alpha.js']);
+    assert.deepEqual(await timeline('?q=scratch.js'), []);
+    write('base.js', 'const rolledBack = true;\n');
+    journal.poll();
+    assert.equal((await timeline()).filter(card => card.uncommitted).length, 1);
+    git('restore', 'base.js');
+    assert.deepEqual((await timeline()).map(card => card.id), [record]);
+    assert.equal((await get('/api/timeline?limit=1')).hasMore, false);
+    write('base.js', 'const intermediate = true;\n');
+    journal.poll();
+    write('base.js', 'const final = true;\n');
+    journal.poll();
+    git('add', 'base.js');
+    commit();
+    const saved = await timeline();
+    assert.equal(saved.length, 2);
+    assert.ok(saved.every(card => !card.uncommitted));
+    assert.ok((await get(`/api/changes/${saved[0].id}/files/0`))[0].lines.includes('+const final = true;'));
+  } finally {
+    await new Promise(resolve => server.close(resolve));
+  }
+});
+
 test('demo tracking settings can be edited without changing real project settings', async t => {
   const { dir, journal } = fixture(t);
   const directory = join(dir, 'real-state');

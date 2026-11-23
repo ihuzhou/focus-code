@@ -1,5 +1,5 @@
 import { describeHunk } from '../web/diff-summary.js';
-import { fileDiff, hash, readHeadEntry, readWorktreeEntry, repositoryBranch, worktreeDiffPaths } from './repository.js';
+import { committedDiffPaths, fileDiff, hash, readHeadEntry, readWorktreeEntry, repositoryBranch, repositoryHead, worktreeDiffPaths } from './repository.js';
 
 function changedLines(hunk) {
   return hunk.lines.filter(line => line.startsWith('+') || line.startsWith('-'));
@@ -7,6 +7,14 @@ function changedLines(hunk) {
 
 function meaningfulLines(hunks) {
   return new Set(hunks.flatMap(changedLines).filter(line => /[\p{L}\p{N}_]/u.test(line.slice(1))));
+}
+
+function includedInCommit(record, file) {
+  const hunks = JSON.parse(record.hunks);
+  if (!hunks.length) return record.status === file.status && record.old_mode === file.oldMode && record.new_mode === file.newMode;
+  const committed = new Set(file.hunks.flatMap(changedLines));
+  const delta = hunks.flatMap(changedLines).filter(line => line.slice(1).trim());
+  return (delta.length ? delta : hunks.flatMap(changedLines)).every(line => committed.has(line));
 }
 
 function sameEntry(a, b) {
@@ -23,6 +31,7 @@ export class CurrentChanges {
     this.journal = journal;
     this.cache = new Map();
     this.items = new Map();
+    this.committed = new Map();
     this.recorded = journal.db.prepare(`
       SELECT c.id, c.time, c.source, c.tool, c.reason, c.reason_origin, f.position, f.hunks,
         f.status, f.old_mode, f.new_mode,
@@ -42,7 +51,8 @@ export class CurrentChanges {
       return { tracking, branch: journal.getMeta('branch') };
     }
     const branch = repositoryBranch(journal.root);
-    const paths = worktreeDiffPaths(journal.root, journal.location);
+    const head = repositoryHead(journal.root);
+    const paths = worktreeDiffPaths(journal.root, journal.location, head);
     const pending = journal.hasActiveTools() ? journal.getMeta('batch') : null;
     const cache = new Map();
     const items = new Map();
@@ -62,7 +72,7 @@ export class CurrentChanges {
       items.set(id, {
         file: entry.file, record: attribution.record,
         metadata: {
-          id, time: attribution.time, source: attribution.source, tool: attribution.tool, branch,
+          id, time: attribution.time, source: attribution.source, tool: attribution.tool, branch, uncommitted: true,
           reason: attribution.reason, reason_origin: attribution.reasonOrigin, file_count: 1, first_path: path,
           added: entry.file.added, removed: entry.file.removed, diff_revision: entry.revision,
           history_id: attribution.record?.id ?? null, notes_version: attribution.record?.notes_version ?? null,
@@ -71,7 +81,58 @@ export class CurrentChanges {
     }
     this.cache = cache;
     this.items = items;
-    return { tracking, branch };
+    return { tracking, branch, head };
+  }
+
+  reconcileCommits(branch, head) {
+    const { journal } = this;
+    if (!head) return;
+    const records = journal.db.prepare(`
+      SELECT p.change_id, p.base, f.position, f.path, f.status, f.old_mode, f.new_mode, f.hunks, a.fingerprint
+      FROM timeline_pending p JOIN changes c ON c.id = p.change_id JOIN files f ON f.change_id = p.change_id
+      LEFT JOIN timeline_after a ON a.change_id = f.change_id AND a.position = f.position
+      WHERE c.branch = ? AND p.base IS NOT ? AND NOT EXISTS (
+        SELECT 1 FROM timeline_confirmed t WHERE t.change_id = f.change_id AND t.position = f.position
+      )
+    `).all(branch, head);
+    if (this.commitHead !== head) {
+      this.commitHead = head;
+      this.committed.clear();
+    }
+    const confirmed = [];
+    for (const record of records) {
+      if (!this.committed.has(record.base)) {
+        this.committed.set(record.base, { paths: committedDiffPaths(journal.root, record.base, head), files: new Map() });
+      }
+      const commit = this.committed.get(record.base);
+      const path = commit.paths.get(record.path);
+      if (!path) continue;
+      if (!commit.files.has(record.path)) {
+        const after = readHeadEntry(journal.root, path.after);
+        commit.files.set(record.path, { after, patch: fileDiff(record.path, readHeadEntry(journal.root, path.before), after) });
+      }
+      const { after, patch } = commit.files.get(record.path);
+      const exact = record.fingerprint && record.fingerprint === after?.fingerprint && record.new_mode === after.mode;
+      if (exact || includedInCommit(record, patch)) confirmed.push(record);
+    }
+    if (confirmed.length) journal.transaction(() => {
+      const insert = journal.db.prepare('INSERT OR IGNORE INTO timeline_confirmed VALUES (?, ?)');
+      for (const { change_id, position } of confirmed) insert.run(change_id, position);
+    });
+  }
+
+  timeline(filters) {
+    const { tracking, branch, head } = this.refresh();
+    if (tracking.enabled) {
+      if (head !== this.journal.getMeta('head')) this.journal.poll();
+      this.reconcileCommits(branch, head);
+    }
+    const replaced = [...new Set([...this.items.values()].map(item => item.record?.id).filter(Boolean))];
+    const history = this.journal.list({ ...filters, timeline: true, replaced });
+    const live = this.list(filters).changes;
+    const changes = [...live, ...history.changes].sort((a, b) => b.time - a.time || Number(Boolean(b.uncommitted)) - Number(Boolean(a.uncommitted)));
+    return { ...history, changes, stats: { ...history.stats, changes: history.stats.changes + live.length }, tracking,
+      repository: { ...history.repository, branch } };
   }
 
   attribution(branch, entry, pending) {

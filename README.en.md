@@ -29,7 +29,7 @@ Requires Node.js 22.13+ and Git on macOS or Linux.
 
 In this example, Codex makes concurrent token refresh calls share one request. Open its timeline entry to see the exact changes in `session.ts` and the reason for sharing the request.
 
-- **Find the edit.** Current changes opens by default and shows uncommitted diffs against Git HEAD. Use History to find edits that were committed, deleted, or reverted. Both views support branch and source filters.
+- **Find the edit.** The timeline shows live edits alongside committed records. Filter by branch or source. A `HEAD` badge marks an uncommitted change.
 - **Inspect the implementation.** Review added and removed lines file by file and reveal surrounding context when needed.
 - **Understand the reason.** Read the overall reason and section notes beside the diff, or add your own notes.
 
@@ -66,7 +66,7 @@ Tracking is on by default. In **监测设置** (Tracking settings), you can chan
 - To exclude one project, keep tracking on globally and set that project to always off.
 - To track only selected projects, turn tracking off globally and set each chosen project to always on.
 
-Pausing tracking also pauses workspace scanning, the current diff view, and agent prompts for explanations. Existing history remains available for browsing, searching, and manual edits. Resuming uses the current files as a new history baseline and records subsequent edits. Settings apply to the viewer and agents using the same data directory.
+Pausing tracking also pauses new records, the live view of uncommitted diffs, and agent prompts for explanations. Existing history remains available for browsing, searching, and manual edits. Resuming uses the current files as a new tracking baseline. Settings apply to the viewer and agents using the same data directory.
 
 </details>
 
@@ -178,7 +178,7 @@ To remove an integration, remove the Focus Code hook entries that invoke `src/cl
 <details>
 <summary>Snapshots, explanations, and tracking coverage</summary>
 
-- Current changes compares the worktree against Git HEAD and updates about every 0.8 seconds while the page is visible. It can show edits while an agent tool is still running. Reverting content or deleting a newly added file removes its current diff. History tracks Git-tracked and non-ignored files about every 1.5 seconds after its initial baseline.
+- The timeline updates about every 0.8 seconds while the page is visible. Edits relative to Git HEAD get a `HEAD` badge and can appear while an agent tool is still running. Committing an edit removes the badge. Reverting an edit or deleting a newly added file removes its uncommitted card. The worktree scan runs about every 1.5 seconds and uses the first scan as a baseline.
 - Pi's global or project extension records its tool activity. Start a new Pi session after installation or an update, or use `/reload` in an open session. Attribution to Pi requires a captured tool event.
 - The agent can submit an overall reason before editing with `: # focus-reason: explain the goal of this edit`. After the edit, the hook gives the agent the changed section IDs and lets it fill in a missing overall reason alongside section explanations with `: # focus-explain: {"change":42,"reason":"Prevent null values from reaching the cache","notes":[[0,0,"Validate the input before it reaches the cache"]]}`. Each note contains the zero-based file index, zero-based section index, and explanation.
 - Records with no overall reason show excerpts from saved section notes or an overview generated from the actual diff, with the source labeled in the viewer. Each diff section shows an agent explanation, a manual entry, or a summary. Summaries use nearby code and calls in the same file to explain effects the code supports, such as reusing an extracted helper or avoiding an error when a value is missing. With limited context, the summary describes the concrete edit. A manual entry takes precedence over later agent submissions.
