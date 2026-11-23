@@ -23,7 +23,6 @@ const messages = {
   discoverProjects: ['已接入的代理记录到修改后，工程会自动出现在列表，也可以手动添加。', 'Projects appear after an integrated agent records a change. You can also add one manually.'],
   addProject: ['添加工程', 'Add project'],
   trackingSettings: ['监测设置', 'Tracking settings'],
-  appearance: ['界面设置', 'Appearance'],
   language: ['语言', 'Language'],
   theme: ['主题', 'Theme'],
   light: ['亮色', 'Light'],

@@ -559,10 +559,13 @@ function applyFilters() {
 
 const jsonOptions = data => ({ method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data) });
 
-$('appearance-settings').addEventListener('click', () => {
+$('language-settings').addEventListener('click', () => {
   $('interface-language').value = language;
+  $('language-dialog').showModal();
+});
+$('theme-settings').addEventListener('click', () => {
   $('interface-theme').value = document.documentElement.dataset.theme ?? 'auto';
-  $('appearance-dialog').showModal();
+  $('theme-dialog').showModal();
 });
 $('interface-language').addEventListener('change', event => {
   language = event.target.value === 'en' ? 'en' : 'zh-CN';

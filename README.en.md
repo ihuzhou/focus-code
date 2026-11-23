@@ -47,7 +47,7 @@ Run it in a Git project to select its worktree automatically. Run it from any ot
 
 To register a project in the browser, select **添加工程** (Add project) and enter the absolute path to its Git worktree. Each worktree has its own history.
 
-Open **界面设置** (Appearance) to choose Simplified Chinese or English and a light, dark, or automatic theme. Auto follows the system theme. The browser remembers your choices.
+Use the top bar's **Language** button to switch between Simplified Chinese and English, or **Theme** to choose Light, Dark, or Auto. Auto follows the system theme. The browser remembers your choices.
 
 Tracking is on by default. In **监测设置** (Tracking settings), you can change the global default or override it for the current project. With a demo project selected, these controls apply to the demo data.
 
@@ -56,7 +56,7 @@ Tracking is on by default. In **监测设置** (Tracking settings), you can chan
 
 | Control | Options | Default and behavior |
 | --- | --- | --- |
-| **界面设置** (Appearance) | Interface language and theme | Simplified Chinese and Auto by default. The language setting applies to interface text and generated summaries. Saved reasons and explanations retain their original wording. |
+| Top bar → Language and Theme | Interface language and theme | Simplified Chinese and Auto by default. The language setting applies to interface text and generated summaries. Saved reasons and explanations retain their original wording. |
 | **监测设置** (Tracking settings) → **全局默认** (Global default) | On or off | On. Applies to every project that inherits the global default, including newly discovered projects. |
 | **监测设置** → Current project | Inherit the global default, always on, or always off | Inherit. A project override takes precedence over the global default and is stored by Git worktree root. |
 | Project and branch selectors | Choose a project and all branches or a single branch | All branches. Records are filtered by the branch at capture time. The list includes local branches and branches with saved history. |
