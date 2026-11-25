@@ -640,7 +640,7 @@ test('current changes show Pi edits before completion and remove deleted or reve
   }
 });
 
-test('one timeline shows live edits once, hides rollbacks, and keeps only committed files', async t => {
+test('one timeline shows live edits once, keeps saved deletions, and hides rollbacks', async t => {
   const { root, journal, write } = fixture(t);
   const git = (...args) => execFileSync('git', args, { cwd: root, stdio: 'ignore' });
   const commit = () => git('-c', 'user.name=Focus Test', '-c', 'user.email=focus@example.test', 'commit', '--no-gpg-sign', '-qm', 'Save edits');
@@ -661,19 +661,22 @@ test('one timeline shows live edits once, hides rollbacks, and keeps only commit
     assert.equal((await timeline()).length, 2);
     assert.ok((await timeline()).every(card => card.history_id === record));
     unlinkSync(join(root, 'scratch.js'));
-    assert.deepEqual((await timeline()).map(card => card.first_path), ['alpha.js']);
+    const deletion = journal.poll();
+    assert.ok(deletion);
+    const inProgress = await timeline();
+    assert.deepEqual(new Set(inProgress.map(card => card.first_path)), new Set(['alpha.js', 'scratch.js']));
     git('add', 'alpha.js');
     commit();
     const published = await timeline('?source=pi');
-    assert.deepEqual(published.map(card => [card.id, card.first_path, card.file_count, Boolean(card.uncommitted)]), [[record, 'alpha.js', 1, false]]);
-    assert.deepEqual((await get(`/api/changes/${record}?timeline=1`)).files.map(file => file.path), ['alpha.js']);
-    assert.deepEqual(await timeline('?q=scratch.js'), []);
+    assert.deepEqual(published.map(card => [card.id, card.first_path, card.file_count, Boolean(card.uncommitted)]), [[record, 'alpha.js', 2, false]]);
+    assert.deepEqual((await get(`/api/changes/${record}?timeline=1`)).files.map(file => file.path), ['alpha.js', 'scratch.js']);
+    assert.deepEqual((await timeline('?q=scratch.js')).map(card => card.id), [deletion, record]);
     write('base.js', 'const rolledBack = true;\n');
     journal.poll();
     assert.equal((await timeline()).filter(card => card.uncommitted).length, 1);
     git('restore', 'base.js');
-    assert.deepEqual((await timeline()).map(card => card.id), [record]);
-    assert.equal((await get('/api/timeline?limit=1')).hasMore, false);
+    assert.deepEqual((await timeline()).map(card => card.id), [deletion, record]);
+    assert.equal((await get('/api/timeline?limit=2')).hasMore, false);
     write('base.js', 'const intermediate = true;\n');
     journal.poll();
     write('base.js', 'const final = true;\n');
@@ -681,7 +684,7 @@ test('one timeline shows live edits once, hides rollbacks, and keeps only commit
     git('add', 'base.js');
     commit();
     const saved = await timeline();
-    assert.equal(saved.length, 2);
+    assert.equal(saved.length, 3);
     assert.ok(saved.every(card => !card.uncommitted));
     assert.ok((await get(`/api/changes/${saved[0].id}/files/0`))[0].lines.includes('+const final = true;'));
 
@@ -705,6 +708,66 @@ test('one timeline shows live edits once, hides rollbacks, and keeps only commit
     assert.equal(paused.repository.branch, 'main');
     assert.equal(paused.tracking.enabled, false);
     assert.deepEqual(paused.changes.map(card => card.id), saved.map(card => card.id));
+  } finally {
+    await new Promise(resolve => server.close(resolve));
+  }
+});
+
+test('current diffs summarize files while edit history preserves each operation in time order', async t => {
+  const { root, journal, write } = fixture(t);
+  const git = (...args) => execFileSync('git', ['-C', root, ...args], { stdio: 'ignore' });
+  write('a.js', 'const state = 0;\n');
+  write('b.js', 'const flag = false;\n');
+  git('add', '.');
+  git('-c', 'user.name=Focus Test', '-c', 'user.email=focus@example.test', 'commit', '--no-gpg-sign', '-qm', 'Baseline');
+  const now = Date.now();
+  journal.poll(now);
+  git('switch', '-c', 'other');
+  journal.poll(now + 1);
+  write('a.js', 'const state = 9;\n');
+  journal.poll(now + 2);
+  git('restore', 'a.js');
+  journal.poll(now + 3);
+  git('switch', 'main');
+  journal.poll(now + 4);
+
+  const capture = (call, path, content, time, reason) => {
+    if (reason) journal.setReason('pi', 'session', reason, time);
+    journal.startTool('pi', 'session', call, 'edit', time);
+    write(path, content);
+    return journal.endTool('pi', 'session', call, time);
+  };
+  const first = capture('edit-a-1', 'a.js', 'const state = 1;\n', now + 10, 'First edit');
+  const second = capture('edit-b', 'b.js', 'const flag = true;\n', now + 20);
+  const third = capture('edit-a-2', 'a.js', 'const state = 2;\n', now + 30, 'Final edit');
+
+  const { server, address } = await serve(journal, { port: 0, open: false });
+  try {
+    const get = async route => {
+      const reply = await fetch(new URL(route, address), { headers: { 'Accept-Language': 'en' } });
+      assert.equal(reply.status, 200);
+      return reply.json();
+    };
+    const cmp = await get('/api/current?scope=current');
+    assert.equal(cmp.stats.changes, 2);
+    assert.ok(cmp.changes.every(change => change.uncommitted && change.diff_summary));
+    const live = cmp.changes.find(change => change.first_path === 'a.js');
+    assert.notEqual(live.diff_summary, 'Final edit');
+    assert.deepEqual((await get('/api/current/' + live.id + '/files/0'))[0].lines, ['-const state = 0;', '+const state = 2;']);
+
+    const operations = await get('/api/operations?scope=current');
+    assert.deepEqual(operations.changes.map(change => [change.id, change.first_path]), [[third, 'a.js'], [second, 'b.js'], [first, 'a.js']]);
+    assert.equal(operations.stats.changes, 3);
+    assert.deepEqual((await get('/api/changes/' + first + '/files/0'))[0].lines, ['-const state = 0;', '+const state = 1;']);
+    assert.deepEqual((await get('/api/changes/' + third + '/files/0'))[0].lines, ['-const state = 1;', '+const state = 2;']);
+    assert.ok((await get('/api/changes/' + first)).files.length);
+    const filtered = await get('/api/operations?scope=current&q=a.js&source=pi&until=' + (now + 30));
+    assert.equal(filtered.stats.changes, 1);
+    assert.deepEqual(filtered.changes.map(change => change.id), [first]);
+    const paged = await get('/api/operations?scope=current&limit=2');
+    assert.deepEqual(paged.changes.map(change => change.id), [third, second]);
+    assert.equal(paged.stats.changes, 3);
+    assert.equal(paged.hasMore, true);
   } finally {
     await new Promise(resolve => server.close(resolve));
   }
@@ -737,6 +800,12 @@ test('review marks are worktree-specific and only apply to the reviewed diff rev
   reloaded.invalidate();
   assert.equal(reloaded.has('worktree-a', revised), true);
   assert.equal(reloaded.has('worktree-a', change), false);
+
+  const operation = { id: 24, time: 5000, file_count: 2 };
+  reloaded.mark('worktree-a', { id: 'file-step:24:0', time: operation.time });
+  assert.equal(reloaded.has('worktree-a', operation), false);
+  reloaded.mark('worktree-a', { id: 'file-step:24:1', time: operation.time });
+  assert.equal(reloaded.has('worktree-a', operation), true);
 });
 
 test('date presets and custom ranges use local midnights and include the end day', () => {

@@ -20,6 +20,7 @@ let hunks;
 let patchMessage;
 let reviewTarget;
 let displayedDiff;
+let timelineMode = new URLSearchParams(location.search).get('mode') === 'cumulative' ? 'cumulative' : 'history';
 const reviewedChanges = new ReviewState(readPreference, savePreference);
 const changeApi = id => `${typeof id === 'string' ? '/api/current' : '/api/changes'}/${id}`;
 let historyLimit = 40;
@@ -32,6 +33,7 @@ let debounce;
 let listKey;
 let diffLimit = 1500;
 let project = '';
+let archivedProject = false;
 const followCurrent = ':current'; // Not a valid Git ref name.
 let branch = followCurrent;
 let branchListKey;
@@ -42,6 +44,11 @@ let hunkTarget;
 let trackingTarget;
 let trackingInitial;
 let trackingRequest = 0;
+let storage;
+let storageRequest = 0;
+let storageConfirmation;
+let storageActionRunning = false;
+let restoredProject;
 let timeFilter = { period: 'all' };
 
 function readPreference(key) {
@@ -90,10 +97,11 @@ function updateProjectOptions(projects, preferred) {
   if (key !== projectListKey) {
     projectListKey = key;
     picker.replaceChildren(...projects.map(item => {
-      const label = item.demo ? t('demoProject', item.name) : item.root;
+      const label = item.demo ? t('demoProject', item.name) : item.archived ? t('archiveProject', item.name) : item.root;
       const option = element('option', '', label);
       option.value = item.id;
-      option.title = item.root ?? '';
+      option.title = item.root ?? label;
+      if (item.archived) option.dataset.archived = 'true';
       return option;
     }));
     picker.disabled = !projects.length;
@@ -124,14 +132,14 @@ function branchName(value) {
 
 function updateBranchOptions(current, branches) {
   const picker = $('branch');
-  const key = JSON.stringify([language, current, branches]);
+  const key = JSON.stringify([language, current, branches, archivedProject]);
   if (key !== branchListKey) {
     branchListKey = key;
     const follow = element('option', '', current ? t('currentBranch', branchName(current)) : t('followCurrentBranch'));
     follow.value = followCurrent;
     const all = element('option', '', t('allBranches'));
     all.value = '';
-    picker.replaceChildren(follow, all, ...branches.map(value => {
+    picker.replaceChildren(...(archivedProject ? [] : [follow]), all, ...branches.map(value => {
       const option = element('option', '', branchName(value));
       option.value = value;
       return option;
@@ -168,15 +176,22 @@ function updateAddress() {
   if (project && branch !== followCurrent) url.searchParams.set('branch', branch);
   else url.searchParams.delete('branch');
   url.searchParams.delete('view');
+  if (timelineMode === 'cumulative') url.searchParams.set('mode', 'cumulative');
+  else url.searchParams.delete('mode');
   history.replaceState(null, '', url);
 }
 
-function switchProject(id) {
+function switchProject(id, { allBranches = false } = {}) {
   const picker = $('project');
   picker.title = picker.selectedOptions[0]?.title ?? '';
   const params = new URLSearchParams(location.search);
   project = id;
-  branch = id && params.get('project') === id ? params.get('branch') ?? followCurrent : followCurrent;
+  archivedProject = picker.selectedOptions[0]?.dataset.archived === 'true';
+  const defaultBranch = archivedProject ? '' : followCurrent;
+  branch = allBranches ? '' : id && params.get('project') === id ? params.get('branch') ?? defaultBranch : defaultBranch;
+  if (archivedProject) timelineMode = 'history';
+  $('tracking-settings').disabled = archivedProject;
+  renderTimelineMode();
   resetTimeline();
   $('root').textContent = '';
   $('demo').hidden = true;
@@ -189,6 +204,22 @@ function switchProject(id) {
   } else {
     renderEmptyProjects();
   }
+}
+
+function renderTimelineMode() {
+  $('show-cumulative').setAttribute('aria-pressed', String(timelineMode === 'cumulative'));
+  $('show-cumulative').disabled = archivedProject;
+  $('show-history').setAttribute('aria-pressed', String(timelineMode === 'history'));
+}
+
+function switchTimelineMode(mode) {
+  if (timelineMode === mode || (archivedProject && mode === 'cumulative')) return;
+  timelineMode = mode;
+  renderTimelineMode();
+  resetTimeline();
+  updateAddress();
+  if (project) placeholder(t('loadingChanges'), '');
+  void refresh();
 }
 
 function switchBranch(value) {
@@ -238,10 +269,6 @@ function fileSummary(path, count) {
   return count === 1 ? path : t('fileSummary', path, count);
 }
 
-function title(change) {
-  return change.reason?.split('\n')[0].replace(/[。！]$/, '') || fileSummary(change.first_path, change.file_count);
-}
-
 function dayLabel(time) {
   const date = new Date(time);
   const today = new Date();
@@ -255,6 +282,12 @@ function completeReview(change) {
   if (!sameReviewVersion(reviewTarget, change)) return;
   reviewTarget = null;
   if (reviewedChanges.mark(project, change)) renderList();
+}
+
+function formatMergeBadge(badge, commit) {
+  badge.hidden = !commit;
+  if (commit) badge.title = t('mergeBadgeHint', commit.slice(0, 8));
+  return badge;
 }
 
 function renderList() {
@@ -281,10 +314,13 @@ function renderList() {
     button.setAttribute('aria-current', String(change.id === selected));
     const time = element('time', '', dates.short.format(change.time));
     time.dateTime = new Date(change.time).toISOString();
-    time.title = dates.full.format(change.time);
+    const fullTime = dates.full.format(change.time);
+    time.title = change.uncommitted ? t('updatedAt', fullTime) : fullTime;
     const line = element('span', 'event-line');
     const badges = element('span', 'event-badges');
     badges.append(element('span', `source ${change.source}`, sourceName(change.source)));
+    if (change.merge_commit) badges.append(formatMergeBadge(element('span', 'merge-tag', 'MERGE'), change.merge_commit));
+    if (change.deleted_count) badges.append(element('span', 'deletion-tag', t('deletionBadge', change.deleted_count)));
     if (change.uncommitted) {
       const tag = element('span', 'head-tag', 'HEAD');
       tag.title = t('uncommittedChange');
@@ -298,13 +334,25 @@ function renderList() {
       dot.title = t('notReviewed');
       eventTime.append(dot);
     }
+    if (change.uncommitted) eventTime.append(element('span', 'event-time-label', t('latestUpdate')));
     eventTime.append(time);
     line.append(badges, eventTime);
-    const name = element('span', 'event-title', title(change));
-    name.title = title(change);
+    const fileLabel = fileSummary(change.first_path?.split('/').at(-1) ?? '', change.file_count);
+    const reason = !change.uncommitted && change.reason?.split('\n')[0].replace(/[。！]$/, '');
+    const name = element('span', 'event-title', reason || fileLabel);
+    name.title = reason || change.first_path;
+    const description = change.uncommitted
+      ? change.diff_summary || fileLimitation(change.limitation) || t(change.file_status)
+      : reason ? fileLabel : '';
     const foot = element('span', 'event-foot');
     foot.append(t('filesCount', change.file_count), stats(change));
-    button.append(line, name, foot, element('span', 'sr-only', t(reviewed ? 'reviewed' : 'notReviewed')));
+    button.append(line, name);
+    if (description) {
+      const summary = element('span', 'event-summary', description);
+      summary.title = change.uncommitted ? description : change.first_path;
+      button.append(summary);
+    }
+    button.append(foot, element('span', 'sr-only', t(reviewed ? 'reviewed' : 'notReviewed')));
     button.addEventListener('click', () => {
       following = false;
       reviewTarget = change;
@@ -322,9 +370,10 @@ function renderList() {
 
 function renderConnection(data, error) {
   const message = error ? t('reconnecting') : data.scanError ? t('scanError') : '';
-  const paused = !error && data.tracking?.enabled === false;
-  $('connection').textContent = t(error ? 'disconnected' : data.scanError ? 'scanFailed' : paused ? 'paused' : 'localTracking');
-  $('signal').classList.toggle('live', !message && !paused);
+  const archived = !error && data.archived;
+  const paused = !error && !archived && data.tracking?.enabled === false;
+  $('connection').textContent = t(error ? 'disconnected' : archived ? 'archivedHistory' : data.scanError ? 'scanFailed' : paused ? 'paused' : 'localTracking');
+  $('signal').classList.toggle('live', !message && !paused && !archived);
   $('signal').classList.toggle('paused', paused);
   $('alert').textContent = message;
   $('alert').hidden = !message;
@@ -347,30 +396,27 @@ async function refresh({ more = false } = {}) {
   for (const [key, value] of Object.entries(timeBounds(timeFilter))) parameters.set(key, value);
   if (more) $('more').disabled = true;
   try {
-    const data = await api(projectRoute(`/api/timeline?${parameters}`));
+    const resource = timelineMode === 'history' ? 'operations' : 'current';
+    const data = await api(projectRoute(`/api/${resource}?${parameters}`));
     if (currentView !== view || request !== listRequest) return;
     updateProjectOptions(data.projects, project);
     const { branch: current, branches } = data.repository;
     if (branch && branch !== followCurrent && branch !== current && !branches.includes(branch)) {
-      switchBranch(followCurrent);
+      switchBranch(archivedProject ? '' : followCurrent);
       return;
     }
     updateBranchOptions(current, branches);
     renderConnection(data);
-    const previous = changes.find(change => change.id === selected);
     changes = data.changes;
     $('more').hidden = !data.hasMore;
     const choice = changes.find(change => change.id === selected);
-    const committed = !choice && previous?.uncommitted && changes.find(change => change.id === previous.history_id);
     const editing = !$('reason-form').hidden || $('hunk-dialog').open;
-    if (committed) {
-      selectChange(committed.id);
-    } else if (!choice || (!more && following && !editing && selected !== changes[0]?.id)) {
-      selectChange(changes[0]?.id, { emptyRepo: data.stats.changes === 0, paused: data.tracking?.enabled === false });
+    if (!choice || (!more && following && !editing && selected !== changes[0]?.id)) {
+      selectChange(changes[0]?.id, { emptyRepo: data.stats.changes === 0, paused: !data.archived && data.tracking?.enabled === false });
     } else if (!editing && (!pendingDetail || pendingDetail !== detailRequest) &&
       (!detail || detail.reason !== choice.reason || detail.reason_origin !== choice.reason_origin ||
       detail.notes_version !== choice.notes_version || detail.diff_revision !== choice.diff_revision || detail.history_id !== choice.history_id ||
-      detail.file_count !== choice.file_count || detail.source !== choice.source || detail.tool !== choice.tool || detail.branch !== choice.branch)) {
+      detail.merge_commit !== choice.merge_commit || detail.file_count !== choice.file_count || detail.source !== choice.source || detail.tool !== choice.tool || detail.branch !== choice.branch)) {
       void loadDetail(choice.id, file?.position);
     }
     renderList();
@@ -406,6 +452,8 @@ function selectChange(id, { emptyRepo, paused } = {}) {
     placeholder(t('paused'), t('resumeHint'));
   } else if (emptyRepo && timeFilter.period !== 'all') {
     placeholder(t('noChangesInRange'), t('changeRangeHint'));
+  } else if (emptyRepo && timelineMode === 'cumulative') {
+    placeholder(t('noCurrentChanges'), t('showHistoryHint'));
   } else if (emptyRepo && branch) {
     placeholder(t('noBranchHistory'), t('otherBranchHint'));
   } else if (emptyRepo) {
@@ -418,9 +466,11 @@ function selectChange(id, { emptyRepo, paused } = {}) {
 async function loadDetail(id, position) {
   const request = pendingDetail = ++detailRequest;
   try {
-    const data = await api(projectRoute(`${changeApi(id)}?timeline=1`));
+    const data = await api(projectRoute(changeApi(id)));
     if (selected !== data.id || request !== detailRequest) return;
+    data.merge_commit = changes.find(change => change.id === data.id)?.merge_commit;
     detail = data;
+    formatMergeBadge($('detail-merge'), data.merge_commit);
     $('placeholder').hidden = true;
     $('detail').hidden = false;
     $('detail-source').textContent = sourceName(data.source);
@@ -513,8 +563,7 @@ async function selectFile(item, { keepScroll = false } = {}) {
     if (selected !== id || request !== fileRequest) return;
     hunks = data;
     displayedDiff = change;
-    patchMessage = fileLimitation(item.limitation) || (item.old_mode && item.new_mode && item.old_mode !== item.new_mode
-      ? t('modeChanged', item.old_mode, item.new_mode) : t('noDiff'));
+    patchMessage = filePatchMessage(item);
   } catch (error) {
     if (selected !== id || request !== fileRequest) return;
     patchMessage = error.message;
@@ -523,13 +572,13 @@ async function selectFile(item, { keepScroll = false } = {}) {
   completeReview(displayedDiff);
 }
 
-function hunkNote(hunk, index) {
+function hunkNote(hunk, index, editable) {
   const note = element('div', `hunk-note${hunk.explanation ? '' : ' inferred'}`);
   const info = element('div', 'hunk-note-text');
   const source = t(hunk.explanation_origin === 'agent' ? 'agentExplanation' : hunk.explanation_origin === 'user' ? 'sourceUser' : 'diffSummary');
   info.append(element('span', 'hunk-label', source), element('p', '', hunk.explanation ?? describeHunk(hunk, language)));
   note.append(info);
-  if (detail.uncommitted) return note;
+  if (!editable) return note;
   const button = element('button', 'button subtle', t(hunk.explanation ? 'editExplanation' : 'addExplanation'));
   button.type = 'button';
   button.setAttribute('aria-label', t('sectionLabel', button.textContent, index + 1));
@@ -547,21 +596,32 @@ function hunkNote(hunk, index) {
 }
 
 function renderDiff() {
-  const area = $('diff-view');
-  $('context').disabled = !hunks?.length;
+  renderPatch({
+    area: $('diff-view'), context: $('context'), hunks, item: file, message: patchMessage,
+    limit: diffLimit, editNotes: !detail?.uncommitted,
+    onMore: () => { diffLimit += 1500; renderDiff(); },
+  });
+}
+
+function filePatchMessage(item) {
+  return fileLimitation(item.limitation) || (item.old_mode && item.new_mode && item.old_mode !== item.new_mode
+    ? t('modeChanged', item.old_mode, item.new_mode) : t('noDiff'));
+}
+
+function renderPatch({ area, context, hunks, item, message, limit, onMore, editNotes = false }) {
+  context.disabled = !hunks?.length;
   if (!hunks?.length) {
-    area.replaceChildren(element('p', 'diff-message', patchMessage));
+    area.replaceChildren(element('p', 'diff-message', message));
     return;
   }
   const patch = element('div', 'patch');
-  if (file.old_mode && file.new_mode && file.old_mode !== file.new_mode) {
-    patch.append(element('div', 'diff-row hunk', `mode ${file.old_mode} → ${file.new_mode}`));
+  if (item.old_mode && item.new_mode && item.old_mode !== item.new_mode) {
+    patch.append(element('div', 'diff-row hunk', `mode ${item.old_mode} → ${item.new_mode}`));
   }
   let count = 0;
-  const context = $('context').checked;
   for (const [index, hunk] of hunks.entries()) {
-    if (count >= diffLimit) break;
-    patch.append(element('div', 'diff-row hunk', `@@ −${hunk.oldStart},${hunk.oldLines} +${hunk.newStart},${hunk.newLines} @@`), hunkNote(hunk, index));
+    if (count >= limit) break;
+    patch.append(element('div', 'diff-row hunk', `@@ −${hunk.oldStart},${hunk.oldLines} +${hunk.newStart},${hunk.newLines} @@`), hunkNote(hunk, index, editNotes));
     const lines = element('div', 'hunk-lines');
     const code = element('div', 'hunk-code');
     lines.append(code);
@@ -570,12 +630,12 @@ function renderDiff() {
     let after = hunk.newStart;
     for (const line of hunk.lines) {
       const sign = line[0];
-      if (sign === ' ' && !context) {
+      if (sign === ' ' && !context.checked) {
         before++;
         after++;
         continue;
       }
-      if (++count > diffLimit) break;
+      if (++count > limit) break;
       if (sign === '\\') {
         code.append(element('div', 'diff-row note-line', line));
         continue;
@@ -587,11 +647,11 @@ function renderDiff() {
     }
   }
   area.replaceChildren(patch);
-  if (count >= diffLimit) {
+  if (count >= limit) {
     const controls = element('div', 'diff-message');
     const more = element('button', 'button', t('displayMoreDiff'));
     more.type = 'button';
-    more.addEventListener('click', () => { diffLimit += 1500; renderDiff(); });
+    more.addEventListener('click', onMore);
     controls.append(more);
     area.append(controls);
   }
@@ -730,6 +790,293 @@ $('tracking-form').addEventListener('submit', async event => {
   }
 });
 
+function storageRepoName(repo) {
+  return repo.demo ? t('demoProject', repo.name) : repo.archived ? t('archiveProject', repo.name) : repo.root ? repo.name : t('unregisteredRepo', repo.name);
+}
+
+function storageUsage({ records, bytes }) {
+  const units = ['B', 'KiB', 'MiB', 'GiB', 'TiB'];
+  let unit = 0;
+  while (bytes >= 1024 && unit < units.length - 1) { bytes /= 1024; unit++; }
+  const format = new Intl.NumberFormat(language, { maximumFractionDigits: unit ? 1 : 0 });
+  return `${t('storedRecords', format.format(records), records)} · ${format.format(bytes)} ${units[unit]}`;
+}
+
+function cancelStorageConfirmation({ restoreFocus = false } = {}) {
+  if (!storageConfirmation) return;
+  const { trigger, cancel, confirm } = storageConfirmation;
+  storageConfirmation = null;
+  cancel.remove();
+  confirm.remove();
+  trigger.hidden = false;
+  if (restoreFocus) trigger.focus({ preventScroll: true });
+}
+
+function bindStorageAction(trigger, scope, repo, branch) {
+  trigger.addEventListener('click', () => {
+    if ($('refresh-storage').disabled) return;
+    cancelStorageConfirmation();
+    const name = repo && (repo.root ?? storageRepoName(repo));
+    const question = scope === 'all' ? t('confirmClearAll') : scope === 'project'
+      ? t('confirmClearRepo', name) : t('confirmClearBranch', name, branchName(branch));
+    const cancel = element('button', 'button', t('cancel'));
+    const confirm = element('button', 'button danger storage-confirm-delete', t('confirmDelete'));
+    cancel.type = confirm.type = 'button';
+    confirm.setAttribute('aria-label', `${confirm.textContent}：${question}`);
+    confirm.title = question;
+    cancel.addEventListener('click', () => cancelStorageConfirmation({ restoreFocus: true }));
+    confirm.addEventListener('click', () => void clearStorage(scope, repo, branch));
+    storageConfirmation = { trigger, cancel, confirm };
+    trigger.hidden = true;
+    trigger.after(cancel, confirm);
+    cancel.focus({ preventScroll: true });
+  });
+}
+
+function storageRowActions(repo, branch) {
+  const actions = element('div', 'storage-actions storage-row-actions');
+  const save = element('button', 'button storage-save', t('saveHistory'));
+  const trigger = element('button', 'button danger', t('deleteRecords'));
+  const name = repo.root ?? storageRepoName(repo);
+  const isBranch = branch !== undefined;
+  save.type = trigger.type = 'button';
+  save.setAttribute('aria-label', `${save.textContent}：${isBranch ? `${name} · ${branchName(branch)}` : name}`);
+  save.addEventListener('click', () => void saveStorageHistory(repo, branch));
+  trigger.setAttribute('aria-label', isBranch ? t('clearBranchRecords', name, branchName(branch)) : t('clearRepoRecords', name));
+  bindStorageAction(trigger, isBranch ? 'branch' : 'project', repo, branch);
+  actions.append(save, trigger);
+  return actions;
+}
+
+function storageProjectRow(repo, expanded) {
+  const group = element('div', 'storage-project');
+  const header = element('div', 'storage-repo');
+  const disclosure = element('button', 'storage-disclosure');
+  disclosure.type = 'button';
+  disclosure.id = `storage-repo-${repo.id}`;
+  disclosure.title = repo.root ?? storageRepoName(repo);
+  const info = element('span', '', storageRepoName(repo));
+  info.append(element('span', 'storage-usage', storageUsage(repo)));
+  disclosure.append(info);
+  header.append(disclosure);
+  if (repo.records) header.append(storageRowActions(repo));
+
+  const content = element('div', 'storage-project-detail');
+  content.id = `storage-detail-${repo.id}`;
+  content.hidden = !expanded.has(disclosure.id);
+  disclosure.setAttribute('aria-controls', content.id);
+  disclosure.setAttribute('aria-expanded', String(!content.hidden));
+  disclosure.addEventListener('click', () => {
+    content.hidden = !content.hidden;
+    disclosure.setAttribute('aria-expanded', String(!content.hidden));
+    if (content.hidden && storageConfirmation && content.contains(storageConfirmation.trigger)) cancelStorageConfirmation();
+  });
+  if (repo.root) content.append(element('p', 'storage-path', repo.root));
+  const branches = element('div', 'storage-branch-list');
+  branches.append(...repo.branches.map(row => {
+    const branch = element('div', 'storage-branch');
+    branch.append(element('span', 'storage-branch-name', branchName(row.branch)),
+      element('span', 'storage-usage', t('storedRecords', row.records, row.records)), storageRowActions(repo, row.branch));
+    return branch;
+  }));
+  content.append(branches);
+  group.append(header, content);
+  return group;
+}
+
+function renderStorage(data) {
+  const activeList = $('storage-active-projects');
+  const emptyList = $('storage-empty-projects');
+  const emptyGroup = $('storage-empty');
+  const active = [];
+  const empty = [];
+  for (const repo of data?.projects ?? []) (repo.records ? active : empty).push(repo);
+  // Keep expanded rows within the same group, but don't carry that state over when a repo is cleared.
+  for (const [list, projects] of [[activeList, active], [emptyList, empty]]) {
+    const expanded = new Set([...list.querySelectorAll('.storage-disclosure[aria-expanded="true"]')].map(node => node.id));
+    list.replaceChildren(...projects.map(repo => storageProjectRow(repo, expanded)));
+  }
+  $('storage-totals').textContent = data ? storageUsage(data) : '';
+  emptyGroup.hidden = !empty.length;
+  if (!empty.length) emptyGroup.open = false;
+  $('storage-empty-label').textContent = t('emptyStorageProjects', empty.length);
+  const target = $('restore-target');
+  const previousTarget = target.value;
+  const archive = element('option', '', t('restoreAsArchive'));
+  archive.value = '';
+  target.replaceChildren(archive, ...(data?.projects ?? []).filter(repo => repo.root && !repo.archived).map(repo => {
+    const option = element('option', '', t('restoreInto', repo.root));
+    option.value = repo.id;
+    return option;
+  }));
+  target.value = [...target.options].some(option => option.value === previousTarget) ? previousTarget : '';
+  if (data && !active.length) activeList.append(element('p', 'setting-help', t(empty.length ? 'noSavedRecords' : 'noStorageProjects')));
+}
+
+function storageControls(busy) {
+  $('refresh-storage').disabled = busy;
+  $('clear-all-storage').disabled = busy || !storage?.records;
+  $('storage-projects').inert = busy;
+  $('storage-projects').setAttribute('aria-busy', String(busy));
+  $('storage-dialog').classList.toggle('storage-busy', busy);
+  $('close-storage').disabled = storageActionRunning;
+  $('restore-storage').disabled = busy || storage?.demo;
+  $('restore-fields').disabled = busy;
+  $('open-restored-history').disabled = busy;
+}
+
+function beginStorageAction(message) {
+  if ($('refresh-storage').disabled) return false;
+  cancelStorageConfirmation();
+  storageActionRunning = true;
+  storageControls(true);
+  $('storage-status').textContent = t(message);
+  $('storage-error').textContent = '';
+  $('open-restored-history').hidden = true;
+  return true;
+}
+
+function finishStorageAction() {
+  storageActionRunning = false;
+  storageControls(false);
+}
+
+async function saveStorageHistory(repo, branch) {
+  if (!beginStorageAction('savingHistory')) return;
+  try {
+    const params = new URLSearchParams({ project: repo.id });
+    if (branch !== undefined) params.set('branch', branch);
+    const response = await fetch(`/api/storage/backup?${params}`, { headers: { 'Accept-Language': language } });
+    if (!response.ok) throw new Error((await response.json()).error);
+    const url = URL.createObjectURL(await response.blob());
+    const link = element('a');
+    link.href = url;
+    link.download = /filename="([^"]+)"/.exec(response.headers.get('Content-Disposition'))?.[1] ?? 'focus-code.focus-history.json';
+    link.click();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+    $('storage-status').textContent = t('historySaved');
+  } catch (error) {
+    $('storage-error').textContent = error.message;
+    $('storage-status').textContent = '';
+  } finally { finishStorageAction(); }
+}
+
+async function loadStorage() {
+  cancelStorageConfirmation();
+  const request = ++storageRequest;
+  storageControls(true);
+  $('storage-status').textContent = t('loadingStorage');
+  try {
+    const data = await api('/api/storage');
+    if (request !== storageRequest) return;
+    storage = data;
+    renderStorage(data);
+    $('storage-status').textContent = '';
+  } catch (error) {
+    if (request === storageRequest) {
+      storage = null;
+      $('storage-status').textContent = '';
+      $('storage-error').textContent = `${$('storage-error').textContent} ${t('storageError')} ${error.message}`.trim();
+      renderStorage(null);
+    }
+  } finally {
+    if (request === storageRequest) storageControls(false);
+  }
+}
+
+async function clearStorage(scope, repo, branch) {
+  if (!beginStorageAction('clearingStorage')) return;
+  const body = { scope, project: repo?.id, branch };
+  let notice = '';
+  try {
+    const { deleted, reclaimPending, failed } = await api('/api/storage', jsonOptions(body));
+    notice = [t('clearedRecords', deleted), reclaimPending && t('reclaimPending')].filter(Boolean).join(' ');
+    if (deleted) $('storage-empty').open = false;
+    if (failed.length) {
+      const names = failed.map(id => {
+        const item = storage.projects.find(project => project.id === id);
+        return item?.root ?? (item ? storageRepoName(item) : id.slice(0, 12));
+      }).join(', ');
+      $('storage-error').textContent = t('clearFailed', names);
+    }
+  } catch (error) {
+    $('storage-error').textContent = error.message;
+  }
+  void refresh();
+  await loadStorage();
+  finishStorageAction();
+  $('storage-status').textContent = notice;
+  const disclosure = repo && $(`storage-repo-${repo.id}`);
+  const focus = disclosure && $('storage-active-projects').contains(disclosure) ? disclosure : $('refresh-storage');
+  focus.focus({ preventScroll: true });
+}
+
+$('storage-settings').addEventListener('click', () => {
+  cancelStorageConfirmation();
+  storage = null;
+  $('storage-error').textContent = '';
+  renderStorage(null);
+  $('restore-form').reset();
+  $('restore-form').hidden = true;
+  $('restore-storage').setAttribute('aria-expanded', 'false');
+  $('open-restored-history').hidden = true;
+  $('storage-dialog').showModal();
+  void loadStorage();
+});
+$('close-storage').addEventListener('click', () => $('storage-dialog').close());
+$('storage-dialog').addEventListener('cancel', event => {
+  if (storageActionRunning || storageConfirmation) event.preventDefault();
+  cancelStorageConfirmation({ restoreFocus: true });
+});
+$('refresh-storage').addEventListener('click', () => {
+  $('storage-error').textContent = '';
+  void loadStorage();
+});
+bindStorageAction($('clear-all-storage'), 'all');
+$('restore-storage').addEventListener('click', () => {
+  cancelStorageConfirmation();
+  const form = $('restore-form');
+  form.hidden = !form.hidden;
+  $('restore-storage').setAttribute('aria-expanded', String(!form.hidden));
+  if (!form.hidden) $('restore-file').focus();
+});
+$('restore-form').addEventListener('submit', async event => {
+  event.preventDefault();
+  const file = $('restore-file').files[0];
+  if (!file || !beginStorageAction('restoringHistory')) return;
+  const target = $('restore-target').value;
+  try {
+    const params = new URLSearchParams({ target });
+    restoredProject = await api(`/api/storage/restore?${params}`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: file,
+    });
+    $('restore-form').reset();
+    $('restore-form').hidden = true;
+    $('restore-storage').setAttribute('aria-expanded', 'false');
+    await loadStorage();
+    void refresh();
+    $('storage-status').textContent = t('historyRestored', restoredProject.imported, restoredProject.skipped);
+    $('open-restored-history').hidden = false;
+  } catch (error) {
+    $('storage-error').textContent = error.message;
+    $('storage-status').textContent = '';
+  } finally {
+    finishStorageAction();
+    if (!$('open-restored-history').hidden) $('open-restored-history').focus();
+  }
+});
+$('open-restored-history').addEventListener('click', () => {
+  if (!restoredProject) return;
+  $('storage-dialog').close();
+  updateProjectOptions(restoredProject.projects, restoredProject.id);
+  projectsLoaded = true;
+  timelineMode = 'history';
+  $('search').value = $('source').value = '';
+  timeFilter = { period: 'all' };
+  renderTimeFilter();
+  switchProject(restoredProject.id, { allBranches: true });
+});
+
 $('project').addEventListener('change', event => switchProject(event.target.value));
 $('branch').addEventListener('change', event => switchBranch(event.target.value));
 $('cancel-hunk').addEventListener('click', () => $('hunk-dialog').close());
@@ -764,6 +1111,8 @@ $('source').addEventListener('change', applyFilters);
 $('refresh').addEventListener('click', () => void refresh());
 $('more').addEventListener('click', () => void refresh({ more: true }));
 $('context').addEventListener('change', renderDiff);
+$('show-cumulative').addEventListener('click', () => switchTimelineMode('cumulative'));
+$('show-history').addEventListener('click', () => switchTimelineMode('history'));
 $('edit-reason').addEventListener('click', () => {
   $('reason-input').value = detail.reason ?? '';
   $('reason-error').textContent = '';
@@ -818,5 +1167,6 @@ async function pollTimeline() {
 }
 
 translateInterface();
+renderTimelineMode();
 void pollTimeline();
 document.addEventListener('visibilitychange', () => { if (!document.hidden) void refresh(); });

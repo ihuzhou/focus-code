@@ -49,6 +49,7 @@
       </div>
       <div class="heading-actions">
         <button type="button" id="tracking-settings" class="button"><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h16M8 5v4m8 1v4m-6 1v4"/></svg><span data-i18n="trackingSettings">监测设置</span></button>
+        <button type="button" id="storage-settings" class="button"><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true"><ellipse cx="12" cy="6" rx="8" ry="3"/><path d="M4 6v12a8 3 0 0 0 16 0V6M4 12a8 3 0 0 0 16 0"/></svg><span data-i18n="storageTitle">数据管理</span></button>
         <button type="button" id="refresh" class="button" title="刷新记录" data-i18n-title="refreshRecords"><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M20 12a8 8 0 1 1-2.3-5.7L20 9m0-5v5h-5"/></svg><span data-i18n="refresh">刷新</span></button>
       </div>
     </div>
@@ -56,7 +57,17 @@
     <div class="workbench">
       <aside class="timeline" aria-label="变动列表" data-i18n-aria="changes">
         <div class="timeline-top">
-          <div class="timeline-heading"><h2 data-i18n="changes">变动记录</h2><span id="count" class="count" aria-label="当前分支范围内的记录数" data-i18n-aria="branchCount">0</span></div>
+          <div class="timeline-heading">
+            <h2 data-i18n="changes">变动记录</h2><span id="count" class="count" aria-label="当前分支范围内的记录数" data-i18n-aria="branchCount">0</span>
+            <div id="timeline-modes" class="timeline-modes" role="group" aria-label="时间线视图" data-i18n-aria="diffMode">
+              <button type="button" id="show-cumulative" aria-pressed="false" aria-label="累计 diff" title="累计 diff：按文件查看相对 HEAD 的净改动和摘要" data-i18n-aria="cumulativeDiff" data-i18n-title="cumulativeHint">
+                <svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h6M7 4v6m7 7h6M9 20l6-16"/></svg><span class="mode-label" data-i18n="cumulativeModeLabel">累计 diff</span>
+              </button>
+              <button type="button" id="show-history" aria-pressed="true" aria-label="修改历史" title="修改历史：按时间查看每次已记录的操作" data-i18n-aria="fileHistory" data-i18n-title="historyHint">
+                <svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 12a9 9 0 1 1 2.6 6.4M3 12V7m0 5h5m4-5v5l3 2"/></svg><span class="mode-label" data-i18n="historyModeLabel">修改历史</span>
+              </button>
+            </div>
+          </div>
           <label class="search"><span class="icon magnify" aria-hidden="true"></span><input id="search" type="search" aria-label="搜索文件或原因" placeholder="搜索文件或原因…" data-i18n-aria="search" data-i18n-placeholder="searchPlaceholder"><kbd aria-hidden="true">/</kbd></label>
           <div class="timeline-filters">
             <label class="select-wrap"><span class="icon filter" aria-hidden="true"></span><select id="source" aria-label="按来源筛选" data-i18n-aria="filterSource">
@@ -93,7 +104,7 @@
         <div id="placeholder" class="placeholder" role="status"><span class="empty-symbol" aria-hidden="true"><svg class="ui-icon" viewBox="0 0 24 24"><circle cx="10.5" cy="10.5" r="5.5"/><path d="m15 15 4.5 4.5m-11-9h4"/></svg></span><h2 id="placeholder-title" data-i18n="loadingChanges">正在加载变动记录</h2><p id="placeholder-text"></p></div>
         <div id="detail" hidden>
           <div class="detail-top">
-            <div class="detail-kicker"><span id="detail-source" class="source"></span><span id="detail-tool" class="tool"></span><time id="detail-time"></time></div>
+            <div class="detail-kicker"><span id="detail-source" class="source"></span><span id="detail-merge" class="merge-tag" hidden>MERGE</span><span id="detail-tool" class="tool"></span><time id="detail-time"></time></div>
             <h2 id="detail-title" class="detail-title"></h2>
             <div class="detail-metadata"><span class="detail-branch" id="detail-branch"></span><span id="detail-count"></span><span id="detail-stats"></span></div>
           </div>
@@ -129,6 +140,37 @@
         </fieldset>
         <div class="form-actions"><span id="tracking-error" class="form-error" role="alert"></span><button type="button" class="button" id="cancel-tracking" data-i18n="cancel">取消</button><button type="submit" class="button primary" id="save-tracking" data-i18n="save" disabled>保存</button></div>
       </form>
+    </dialog>
+    <dialog id="storage-dialog" aria-labelledby="storage-title" aria-describedby="storage-help">
+      <div class="storage-heading"><h2 id="storage-title" data-i18n="storageTitle">数据管理</h2><button type="button" id="close-storage" class="button" data-i18n="close" autofocus>关闭</button></div>
+      <p id="storage-help" class="setting-help" data-i18n="storageHelp">数据库总占用包含监测快照。清理只删除历史，不影响 Git 或工作区；实时改动仍可能显示。</p>
+      <div class="storage-overview">
+        <p id="storage-totals"></p>
+        <div class="storage-actions">
+          <button type="button" id="restore-storage" class="button" aria-expanded="false" aria-controls="restore-form" data-i18n="restoreHistory" disabled>恢复历史</button>
+          <button type="button" id="refresh-storage" class="button" data-i18n="refresh">刷新</button>
+          <button type="button" id="clear-all-storage" class="button danger" data-i18n="clearAllRecords" disabled>清理全部记录</button>
+        </div>
+      </div>
+      <form id="restore-form" class="restore-form" hidden>
+        <fieldset id="restore-fields">
+          <label for="restore-file" data-i18n="historyFile">历史归档文件</label>
+          <input type="file" id="restore-file" accept=".json,application/json" required>
+          <label for="restore-target" data-i18n="restoreDestination">恢复到</label>
+          <select id="restore-target"><option value="" data-i18n="restoreAsArchive">作为独立审阅归档</option></select>
+          <div class="form-actions"><p class="setting-help" data-i18n="restoreHelp">审阅归档不需要本地仓库；合并不会覆盖已有记录或修改工作区。</p><button type="submit" class="button primary" data-i18n="importHistory">导入</button></div>
+        </fieldset>
+      </form>
+      <p id="storage-status" class="setting-help" role="status"></p>
+      <button type="button" id="open-restored-history" class="button" data-i18n="viewRestoredHistory" hidden>查看导入的历史</button>
+      <p id="storage-error" class="form-error" role="alert"></p>
+      <div id="storage-projects" aria-busy="false">
+        <div id="storage-active-projects" class="storage-projects"></div>
+        <details id="storage-empty" class="storage-empty" hidden>
+          <summary id="storage-empty-label"></summary>
+          <div id="storage-empty-projects" class="storage-projects"></div>
+        </details>
+      </div>
     </dialog>
     <dialog id="hunk-dialog" aria-labelledby="hunk-dialog-title">
       <form id="hunk-form">

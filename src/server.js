@@ -1,7 +1,10 @@
 import { createServer } from 'node:http';
 import { readFileSync } from 'node:fs';
 import { CurrentChanges } from './current.js';
+import { MergeOrigins } from './merge-origins.js';
+import { archiveLimit } from './history-archive.js';
 import { ProjectCatalog } from './projects.js';
+import { repositoryBranch, repositoryBranches } from './repository.js';
 import { trackingModes } from './tracking.js';
 import { translate } from '../web/i18n.js';
 import { openBrowser, viewerIdentity, viewerPorts } from './viewer.js';
@@ -30,17 +33,32 @@ function json(response, status, value) {
   response.end(JSON.stringify(value));
 }
 
-async function readJson(request) {
+async function readBody(request, limit) {
+  if (Number(request.headers['content-length']) > limit) {
+    request.resume();
+    return null;
+  }
   let length = 0;
   const chunks = [];
-  for await (const chunk of request) {
+  for await (const chunk of request.iterator({ destroyOnReturn: false })) {
     length += chunk.length;
-    if (length > 8192) return null;
+    if (length > limit) {
+      request.resume();
+      return null;
+    }
     chunks.push(chunk);
   }
-  try { return JSON.parse(Buffer.concat(chunks).toString('utf8')); }
+  return Buffer.concat(chunks, length);
+}
+
+async function readJson(request) {
+  const bytes = await readBody(request, 8192);
+  try { return bytes ? JSON.parse(bytes.toString('utf8')) : null; }
   catch { return null; }
 }
+
+const validBranch = value => typeof value === 'string' && value.length > 0 && !value.includes('\0');
+const archiveFilename = name => name.replace(/[^a-z\d._-]+/gi, '-').replace(/^[.-]+|[.-]+$/g, '').slice(0, 75) || 'focus-code';
 
 function listen(server, port) {
   return new Promise((resolve, reject) => {
@@ -101,10 +119,46 @@ export async function serve(initial, { port, demo = false, open = true, director
           return json(response, 201, { projects: catalog.list(), selected: added.id });
         }
       }
+      if (pathname === '/api/storage/backup' && method === 'GET') {
+        const project = catalog.storageProjects().find(item => item.id === searchParams.get('project'));
+        if (!project) return failure(404, 'missingProject');
+        const branch = searchParams.get('branch') ?? undefined;
+        if (branch !== undefined && !validBranch(branch)) return failure(400, 'invalidArchive');
+        const result = await catalog.storage('export', [project], branch);
+        if (result.issue) return failure(result.issue === 'archiveTooLarge' ? 413 : 404, result.issue);
+        const filename = `${archiveFilename(branch === undefined ? project.name : `${project.name}-${branch}`)}.focus-history.json`;
+        response.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Content-Disposition': `attachment; filename="${filename}"` });
+        return response.end(result.data);
+      }
+      if (pathname === '/api/storage/restore' && method === 'POST') {
+        if (demo) return failure(403, 'demoArchiveRestore');
+        const id = searchParams.get('target');
+        const target = id && catalog.storageProjects().find(item => item.id === id && item.root && !item.archived);
+        if (id && !target) return failure(404, 'missingProject');
+        const bytes = await readBody(request, archiveLimit);
+        if (!bytes) return failure(413, 'archiveTooLarge');
+        const result = await catalog.restoreHistory(bytes, target || undefined);
+        if (result.issue) return failure(400, result.issue);
+        return json(response, 200, { ...result, projects: catalog.list(), archived: !target });
+      }
+      if (pathname === '/api/storage') {
+        if (method === 'GET') return json(response, 200, { ...await catalog.storage('inventory', catalog.storageProjects()), demo });
+        if (method === 'POST') {
+          const { scope, project, branch } = await readJson(request) ?? {};
+          const valid = scope === 'all' ? project === undefined && branch === undefined :
+            (scope === 'project' || scope === 'branch') && typeof project === 'string' &&
+            (scope === 'branch' ? validBranch(branch) : branch === undefined);
+          if (!valid) return failure(400, 'invalidCleanup');
+          const projects = catalog.storageProjects().filter(item => scope === 'all' || item.id === project);
+          if (scope !== 'all' && !projects.length) return failure(404, 'missingProject');
+          return json(response, 200, await catalog.storage('clear', projects, branch));
+        }
+      }
       if (pathname === '/api/tracking') {
         const id = searchParams.get('project');
         const project = id ? catalog.get(id) : demo ? catalog.initial : null;
         if (id && !project) return failure(404, 'missingProject');
+        if (project?.archived) return method === 'GET' ? json(response, 200, { editable: false, enabled: false }) : failure(400, 'invalidTracking');
         const settingsStore = project?.demo ? project.journal.tracking : catalog.tracking;
         if (method === 'GET') {
           return json(response, 200, { ...settingsStore.get(project?.root), editable: true, demo: Boolean(project?.demo) });
@@ -130,39 +184,60 @@ export async function serve(initial, { port, demo = false, open = true, director
       const project = catalog.get(searchParams.get('project'));
       if (!project) return failure(404, 'missingProject');
       const { journal } = project;
-      if (method === 'GET' && pathname === '/api/timeline') {
+      if (method === 'GET' && ['/api/timeline', '/api/current', '/api/operations'].includes(pathname)) {
         const from = timestampParameter(searchParams, 'from');
         const until = timestampParameter(searchParams, 'until');
         if (Number.isNaN(from) || Number.isNaN(until) || (from !== undefined && until !== undefined && from >= until)) {
           return failure(400, 'invalidTimeRange');
         }
-        const current = project.current ??= new CurrentChanges(journal);
-        // Discovery updates the dropdown on the next refresh; it need not delay the timeline.
-        void catalog.discover(project)?.catch(error => console.error(`Focus Code (${project.root}): ${error.message}`));
-        const snapshot = await current.refresh();
-        if (snapshot.tracking.enabled && snapshot.head !== journal.getMeta('head')) {
-          const initializing = !journal.getMeta('initialized');
-          const scan = catalog.poll(project);
-          // Live diffs do not need a full snapshot when the project is first opened.
-          if (!initializing) await scan;
+        const requestedLimit = Number(searchParams.get('limit'));
+        const limit = Number.isSafeInteger(requestedLimit) && requestedLimit > 0 && requestedLimit < Number.MAX_SAFE_INTEGER ? requestedLimit : undefined;
+        const branchFilter = branch => searchParams.get('scope') === 'current' ? branch : searchParams.get('branch');
+        const filters = { from, until, limit, source: searchParams.get('source'), search: searchParams.get('q')?.slice(0, 200) };
+        // Discovery updates the dropdown on the next refresh; it need not delay the list.
+        void catalog.discover(project)?.catch(error => console.error(error.message));
+        let list;
+        let tracking;
+        if (project.archived) {
+          const filesOnly = pathname === '/api/current';
+          list = filesOnly ? { stats: { changes: 0, agents: 0, latest: null }, changes: [], hasMore: false, repository: journal.repository(null) }
+            : journal.list({ ...filters, branch: branchFilter(null), operations: true, worktreeBranch: null });
+          list.repository = { ...list.repository, root: null, name: project.name };
+          return json(response, 200, { ...list, archived: true, projects: catalog.list(), tracking: { enabled: false } });
         }
-        const limit = Number(searchParams.get('limit'));
-        const branch = searchParams.get('scope') === 'current' ? snapshot.branch : searchParams.get('branch');
-        return json(response, 200, {
-          ...current.timeline({ branch, from, until, source: searchParams.get('source'), search: searchParams.get('q')?.slice(0, 200),
-            limit: Number.isSafeInteger(limit) && limit > 0 && limit < Number.MAX_SAFE_INTEGER ? limit : undefined }, snapshot),
-          projects: catalog.list(), demo: project.demo, scanError: project.error,
-        });
+        if (pathname === '/api/operations') {
+          // Recorded operations do not depend on scanning or reconciling today's working tree.
+          const branch = repositoryBranch(project.root);
+          list = journal.list({ ...filters, branch: branchFilter(branch), worktreeBranch: branch, operations: true });
+          project.merges ??= new MergeOrigins(journal);
+          list.changes = await project.merges.annotate(list.changes);
+          tracking = journal.tracking.get(project.root);
+        } else {
+          const current = project.current ??= new CurrentChanges(journal);
+          const snapshot = await current.refresh();
+          const branch = branchFilter(snapshot.branch);
+          tracking = snapshot.tracking;
+          if (pathname === '/api/current') {
+            list = { ...current.list({ ...filters, branch, language }), repository: journal.repository(snapshot.branch) };
+          } else {
+            if (tracking.enabled && snapshot.head !== journal.getMeta('head')) {
+              const initializing = !journal.getMeta('initialized');
+              const scan = catalog.poll(project);
+              // Live diffs do not need a full snapshot when the project is first opened.
+              if (!initializing) await scan;
+            }
+            list = current.timeline({ ...filters, branch }, snapshot);
+          }
+        }
+        if (pathname !== '/api/timeline' && list.repository.branch !== journal.getMeta('branch')) {
+          const local = repositoryBranches(project.root) ?? [];
+          list.repository.branches = [...new Set([...list.repository.branches, ...local])].sort();
+        }
+        return json(response, 200, { ...list, tracking, projects: catalog.list(), demo: project.demo, scanError: project.error });
       }
-      if (method === 'GET' && (pathname === '/api/current' || pathname.startsWith('/api/current/'))) {
+      if (method === 'GET' && pathname.startsWith('/api/current/')) {
+        if (project.archived) return failure(404, 'missingChange');
         const current = project.current ??= new CurrentChanges(journal);
-        if (pathname === '/api/current') {
-          const [{ tracking, branch }] = await Promise.all([current.refresh(), catalog.discover(project)]);
-          return json(response, 200, {
-            ...current.list({ branch: searchParams.get('branch'), source: searchParams.get('source'), search: searchParams.get('q')?.slice(0, 200) }),
-            repository: journal.repository(branch), projects: catalog.list(), demo: project.demo, scanError: project.error, tracking,
-          });
-        }
         const match = /^\/api\/current\/([a-f\d]{64})(\/files\/0)?$/.exec(pathname);
         if (!match || !journal.tracking.get(project.root).enabled) return failure(404, 'missingChange');
         const item = match[2] ? current.patch(match[1]) : current.detail(match[1], language);
@@ -171,10 +246,13 @@ export async function serve(initial, { port, demo = false, open = true, director
       if (method === 'GET' && pathname === '/api/changes') {
         await catalog.discover(project);
         const before = Number(searchParams.get('before'));
-        return json(response, 200, { ...journal.list({
+        const list = journal.list({
           branch: searchParams.get('branch'), source: searchParams.get('source'), search: searchParams.get('q')?.slice(0, 200),
           before: Number.isSafeInteger(before) && before > 0 ? before : undefined,
-        }), projects: catalog.list(), demo: project.demo, scanError: project.error, tracking: journal.tracking.get(project.root) });
+        });
+        if (project.archived) list.repository = { ...list.repository, root: null, name: project.name };
+        return json(response, 200, { ...list, projects: catalog.list(), demo: project.demo, archived: project.archived, scanError: project.error,
+          tracking: project.archived ? { enabled: false } : journal.tracking.get(project.root) });
       }
       const match = /^\/api\/changes\/(\d+)(?:\/(reason|files\/(\d+)(?:\/hunks\/(\d+)\/explanation)?))?$/.exec(pathname);
       if (match) {

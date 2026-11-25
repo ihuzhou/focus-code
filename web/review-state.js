@@ -32,7 +32,15 @@ export class ReviewState {
   }
 
   has(project, change) {
-    return this.entries(project).get(key(change)) === revision(change);
+    const entries = this.entries(project);
+    const version = revision(change);
+    if (entries.get(key(change)) === version) return true;
+    // A workspace that used file-by-file history only reviewed the whole operation if every file was viewed.
+    if (change.uncommitted || !Number.isSafeInteger(change.id) || !Number.isSafeInteger(change.file_count) || change.file_count <= 0) return false;
+    for (let position = 0; position < change.file_count; position++) {
+      if (entries.get(`history:file-step:${change.id}:${position}`) !== version) return false;
+    }
+    return true;
   }
 
   mark(project, change) {

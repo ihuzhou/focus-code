@@ -65,12 +65,24 @@ Tracking is on by default. In **监测设置** (Tracking settings), you can chan
 
 Unreviewed cards have a dot. A card is dimmed after you open it and its diff loads. Review status is saved per browser and worktree; a new revision of an uncommitted diff is unreviewed.
 
+Use the switch next to the card-list heading to choose **Cumulative diff** or **Edit history**. Edit history is the default. Cumulative diff summarizes one file per card against `HEAD`; Edit history shows one card per recorded operation, including repeated edits to the same file. A captured file deletion appears as a new card labeled **File deleted**, with a diff of what was removed. Earlier cards stay in Edit history. The two views track review status independently. Recorded operations that exactly match a recent merge against its first parent stay visible with a `MERGE` badge.
+
 - To exclude one project, keep tracking on globally and set that project to always off.
 - To track only selected projects, turn tracking off globally and set each chosen project to always on.
 
 Pausing tracking also pauses new records, the live view of uncommitted diffs, and agent prompts for explanations. Existing history remains available for browsing, searching, and manual edits. Resuming uses the current files as a new tracking baseline. Settings apply to the viewer and agents using the same data directory.
 
 </details>
+
+### Data management
+
+Open **Data management** above the timeline to see the total record count and storage usage, including a breakdown by repository (Git worktree). Expand a repository to see record counts by branch. Usage is the size of each SQLite database and its WAL/shared-memory files, including the snapshots used for tracking.
+
+You can clear saved history for all repositories, a single repository, or one branch. Use **Delete** at the right of a repository or branch row, then confirm or cancel in that row. Repositories with no saved history move to a collapsed group where you can still inspect their storage usage. Confirming permanently removes the selected diffs, reasons, and section explanations, and attempts to compact the database. Cleanup leaves Git, working files, and tracking settings untouched. Live diffs may still appear, and new edits can still be recorded.
+
+**Save and restore history:** Use **Save history** on a repository or branch row to download a `.focus-history.json` file. It contains saved diffs, reasons, and section notes, but no tracking snapshots, Git objects, or session IDs. Review the contents before sharing. Each archive is limited to 32 MiB; export one branch at a time for larger histories.
+
+Receivers import the file from **Data management → Restore history**. By default it opens as a standalone review archive, with no checkout needed. You can also merge into a local worktree; existing records and working files aren't overwritten, and duplicate records are skipped. Imported archives remain available in the project picker.
 
 ## Command-line options
 
@@ -171,7 +183,9 @@ Replace `/path/to/repo` with the Git worktree your agent uses.
 
 ### Upgrade and uninstall
 
-Run `npm install -g focus-code@latest` to upgrade an npm installation. Restart the viewer and any active clients to load the new code. The installer merges existing JSON settings and can be run again. If Focus Code or Node moves to a different path, rerun the relevant installer and remove any Focus Code hooks that reference the previous path.
+Run `focus-code update` to upgrade a verified global npm installation. To show the installed version, the latest public npm version, and the installation source without installing anything, run `focus-code update --check`. Local builds, links, and unverified installations are never overwritten. Restart the viewer and any active clients to load the new code.
+
+If your version does not have the update command, use `npm install -g focus-code@latest --registry=https://registry.npmjs.org/` to upgrade a global npm installation manually. The installer merges existing JSON settings and can be run again. If Focus Code or Node moves to a different path, rerun the relevant installer and remove any Focus Code hooks that reference the previous path.
 
 To remove an integration, remove the Focus Code hook entries that invoke `src/cli.js hook` and any generated Claude Code or Codex `focus-code` skill directories. For Pi or OpenCode, remove the generated extension entry. Use the TRAE CLI plugin manager for that client. Run `npm uninstall -g focus-code` to remove the command-line package. The data directory retains its history.
 
@@ -180,7 +194,7 @@ To remove an integration, remove the Focus Code hook entries that invoke `src/cl
 <details>
 <summary>Snapshots, explanations, and tracking coverage</summary>
 
-- The timeline updates about every 0.8 seconds while the page is visible. Edits relative to Git HEAD get a `HEAD` badge and can appear while an agent tool is still running. Committing an edit removes the badge. Reverting an edit or deleting a newly added file removes its uncommitted card. The worktree scan runs about every 1.5 seconds and uses the first scan as a baseline.
+- The timeline updates about every 0.8 seconds while the page is visible. Edits relative to Git HEAD get a `HEAD` badge and can appear while an agent tool is still running. Committing an edit removes it from Cumulative diff. A revert or deletion that leaves no net change removes the card only from Cumulative diff; captured operations remain in Edit history. The worktree scan runs about every 1.5 seconds and uses the first scan as a baseline.
 - Pi's global or project extension records its tool activity. Start a new Pi session after installation or an update, or use `/reload` in an open session. Attribution to Pi requires a captured tool event.
 - The agent can submit an overall reason before editing with `: # focus-reason: explain the goal of this edit`. After the edit, the hook gives the agent the changed section IDs and lets it fill in a missing overall reason alongside section explanations with `: # focus-explain: {"change":42,"reason":"Prevent null values from reaching the cache","notes":[[0,0,"Validate the input before it reaches the cache"]]}`. Each note contains the zero-based file index, zero-based section index, and explanation.
 - Records with no overall reason show excerpts from saved section notes or an overview generated from the actual diff, with the source labeled in the viewer. Each diff section shows an agent explanation, a manual entry, or a summary. Summaries use nearby code and calls in the same file to explain effects the code supports, such as reusing an extracted helper or avoiding an error when a value is missing. With limited context, the summary describes the concrete edit. A manual entry takes precedence over later agent submissions.

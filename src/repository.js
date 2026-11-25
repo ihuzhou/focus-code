@@ -23,9 +23,13 @@ function git(cwd, ...args) {
   return runGit(cwd, args, 'utf8');
 }
 
-async function runGitAsync(cwd, args, env = gitEnv) {
-  const { stdout } = await execFileAsync('git', args, { ...gitLimits, cwd, env, encoding: 'utf8' });
-  return stdout;
+async function runGitAsync(cwd, args, env = gitEnv, { encoding = 'utf8', input } = {}) {
+  const pending = execFileAsync('git', args, { ...gitLimits, cwd, env, encoding });
+  if (input !== undefined) {
+    pending.child.stdin.on('error', () => {});
+    pending.child.stdin.end(input);
+  }
+  return (await pending).stdout;
 }
 
 function gitAsync(cwd, ...args) {
@@ -134,6 +138,11 @@ function readEntry(path, stat, signature) {
   }
 }
 
+function missingEntry(path) {
+  try { lstatSync(path); return false; }
+  catch (error) { return ['ENOENT', 'ENOTDIR'].includes(error.code); }
+}
+
 export function scanFiles(root, previous, readPrevious, ownDirectory) {
   const paths = new Set(git(root, 'ls-files', '-z', '--cached', '--others', '--exclude-standard').split('\0').filter(Boolean));
   const ownRelative = relative(root, ownDirectory);
@@ -145,7 +154,7 @@ export function scanFiles(root, previous, readPrevious, ownDirectory) {
   const directories = new Map();
   const updates = [];
   for (const name of previous.keys()) {
-    if (!paths.has(name)) updates.push({ path: name, after: null });
+    if (!paths.has(name)) updates.push({ path: name, after: null, missing: missingEntry(join(root, name)) });
   }
   for (const name of paths) {
     const path = join(root, name);
@@ -168,17 +177,17 @@ export function scanFiles(root, previous, readPrevious, ownDirectory) {
       if (after) updates.push({ path: name, after });
     } catch (error) {
       if (['ENOENT', 'ENOTDIR'].includes(error.code)) {
-        if (previous.has(name)) updates.push({ path: name, after: null });
+        if (previous.has(name)) updates.push({ path: name, after: null, missing: true });
       } else if (!['EACCES', 'EPERM', 'ELOOP', 'ESTALE'].includes(error.code)) {
         throw error;
       }
     }
   }
 
-  return updates.map(({ path, after }) => {
+  return updates.map(({ path, after, missing }) => {
     const before = previous.has(path) ? readPrevious(path) : null;
     const change = before?.fingerprint !== after?.fingerprint || before?.mode !== after?.mode;
-    return { path, before, after, change };
+    return { path, before, after, change, missing };
   });
 }
 
@@ -209,6 +218,48 @@ function parseRawDiff(output) {
 export function committedDiffPaths(root, base, head) {
   const from = base ?? git(root, 'hash-object', '-t', 'tree', '/dev/null').trim();
   return parseRawDiff(git(root, ...rawDiffArgs, from, head, '--'));
+}
+
+export async function mergeTip(root, branch) {
+  const ref = branch === 'HEAD'
+    ? await gitAsync(root, 'rev-parse', '--verify', '--quiet', 'HEAD')
+    : await gitAsync(root, 'show-ref', '--verify', '--hash', `refs/heads/${branch}`);
+  return ref.trim();
+}
+
+export async function firstParentMerges(root, head) {
+  const log = await gitAsync(root, 'log', '--first-parent', '--max-count=512', '--format=%H %P', head, '--');
+  const merges = new Map();
+  for (const line of log.trim().split('\n')) {
+    const [commit, base, otherParent] = line.trim().split(' ');
+    if (otherParent) merges.set(base, { commit, base });
+  }
+  return merges;
+}
+
+export async function mergeDiffPaths(root, base, commit) {
+  return parseRawDiff(await gitAsync(root, ...rawDiffArgs, base, commit, '--'));
+}
+
+export async function mergeBlobs(root, paths) {
+  const ids = [...new Set([...paths.values()].flatMap(({ before, after }) => [before?.oid, after?.oid]).filter(Boolean))];
+  const data = await runGitAsync(root, ['cat-file', '--batch'], gitEnv, { encoding: 'buffer', input: ids.join('\n') + '\n' });
+  const blobs = new Map();
+  let offset = 0;
+  for (const id of ids) {
+    const end = data.indexOf(10, offset);
+    if (end === -1) return null;
+    const [oid, kind, bytes] = data.toString('ascii', offset, end).split(' ');
+    const size = Number(bytes);
+    offset = end + 1;
+    if (oid !== id || kind !== 'blob' || !Number.isSafeInteger(size) || size < 0 || size > maxFileSize || data[offset + size] !== 10) return null;
+    const content = data.subarray(offset, offset + size);
+    const text = decodeFile(content);
+    if (text === null) return null;
+    blobs.set(id, { text, fingerprint: hash(content) });
+    offset += size + 1;
+  }
+  return blobs;
 }
 
 const untrackedArgs = ['ls-files', '-z', '--others', '--exclude-standard'];

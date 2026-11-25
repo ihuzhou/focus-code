@@ -12,11 +12,13 @@ const usage = `Focus Code
   focus-code watch [仓库路径] [--port 端口] [--no-open]
   focus-code demo [--port 端口] [--no-open]
   focus-code show [仓库路径] [--no-open]
+  focus-code update [--check | --apply]
   focus-code install <claude|opencode|gemini|trae> [--global | 仓库路径]
   focus-code install trae-cli [--global]
   focus-code install <codex|pi> [--global | 仓库路径]
   focus-code install all [仓库路径]
 
+  update 默认升级公开 npm 安装，--check 只检查。
   Claude Code、OpenCode、Gemini CLI 和 TRAE 默认使用用户级设置。
   watch 不指定路径时，优先打开当前 Git 工作树。
   默认尝试 4317、4318，随后使用系统提供的空闲端口。`;
@@ -83,6 +85,14 @@ async function main([command, ...args]) {
       console.error(`Focus Code: ${error.message}`);
       if (requested === 'gemini') console.log('{}');
     }
+    return;
+  }
+  if (command === 'update') {
+    if (args.length > 1 || ![undefined, '--check', '--apply'].includes(args[0])) {
+      throw new Error('用法：focus-code update [--check | --apply]');
+    }
+    const { updateFocusCode } = await import('./update.js');
+    await updateFocusCode({ apply: args[0] !== '--check' });
     return;
   }
   if (command === 'install') {
